@@ -272,7 +272,7 @@ Artifacts: `moss_ingest.py`, `retriever.py` (`MossRetriever` = the §3c seam), `
 - **Phase 2 screen** — `server.py` + `screen.html`: one `applyState(screen_state)` renderer, `/state` poll, `/ask` typed-input (the **R2 fallback**), fully inline/no-CDN. Verified jam→answered+SOP-1187, bypass→escalated. (`16416cd`)
 
 **Scaffolded (code + syntax-checked; NOT run — need your hardware/keys):**
-- **Phase 3 `agent.py`** — LiveKit 1.5.x voice; `core.answer` is the brain; publishes `screen_state` over the data channel; `LIVEKIT_URL` defaults to `ws://127.0.0.1:7880`. Flagged 1.5.x API assumptions to verify once deps install. (`6405f2c`)
+- **Phase 3 voice — WIRED + verified mic-free** (post-scaffold): deps + `livekit-server` 1.12 installed; `voice_smoke.py` (Kokoro TTS → mlx-whisper STT → `core.answer` → TTS) **PASS**; `agent.py` rebuilt against real `livekit-agents==1.5.17` — in-process custom STT/TTS nodes, `core.answer` via `llm_node`, push-to-talk RPC, `screen_state` published over the data channel; `agent.py check` PASS **and the worker registers with `livekit-server`**. The **live push-to-talk mic round-trip is the only unverified piece** (needs your mic). `.env` fix: `WHISPER_MODEL` must be `mlx-community/whisper-small-mlx` (the bare name 404s); empty `HF_TOKEN` breaks anonymous HF downloads.
 - **Phase 4 `unsiloed_ingest.py`** — PDF → Parse/Extract → `corpus` schema → Moss; needs `UNSILOED_API_KEY`; field-mapping table inside. (`6405f2c`)
 
 **Gap-register deltas:** G3 (typed-input) → **addressed** (screen.html). G5 (CDN offline) → **addressed** (inline). G1 (LiveKit cloud default) → **partly** (`agent.py` defaults local; still needs the wifi-off round-trip DoD). G8 → **addressed** (`test_beats.py`).
