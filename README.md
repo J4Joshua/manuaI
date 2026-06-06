@@ -1,61 +1,96 @@
-# ManuAI — M1 skateboard
+# ManuAI
 
-The **sacred loop**, runnable with **wifi off**:
+**An offline-first voice copilot for the factory floor.** When a machine faults, an operator just asks out loud — *"the labeler on line 3 jammed, error E-42"* — and ManuAI **speaks back the right procedure and shows it on screen, cited to the exact SOP** — or, if there's no approved procedure, it **refuses and escalates** instead of guessing. It runs entirely on one Apple-Silicon box, **with the wifi physically off.**
 
-> question → local embed (nomic) → retrieve + score → **threshold gate** → Qwen-3B (forced JSON) → grounded answer **cited from real SOP metadata**, or **refuse + escalate**.
+> Built for the Conversational AI Hackathon (Moss · F25).
 
-No Unsiloed, no voice, no GPU, no cloud. This is **M1** from the build plan — get it green, **record the wifi-off video**, then layer on the screen (Phase 2) and voice (Phase 3). Full plan + decisions: see [`PRD.md`](./docs/PRD.md).
+## Why it's different
 
-## Prereqs (one time)
-Ollama is installed and running as a service; pull the two local models (the only downloads):
-```bash
-ollama pull qwen2.5:3b
-ollama pull nomic-embed-text
-ollama list        # both should appear
+- **Offline-first.** Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally. The headline demo works with the internet unplugged — nothing leaves the floor.
+- **Grounded or silent.** Every answer cites its source (`SOP-1187 §4.2`); if nothing in the corpus matches the task, it escalates to a supervisor rather than improvising. Safety-critical steps (lockout/tagout) surface *first*.
+- **Fast on-prem retrieval.** [Moss](https://www.moss.dev) for sub-10ms semantic search over the SOP corpus, with a fully-local cosine stub as the bulletproof-offline fallback.
+
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph ING["① INGESTION — cloud · one-time · OFF the live query path"]
+    DOCS["SOPs &amp; OEM PDFs<br/>data/machines/*"] --> UNS["Unsiloed<br/>Parse + Extract"] --> CH["corpus.py<br/>section chunks + metadata"]
+  end
+  CH --> MX[("Moss index<br/>cloud-built")]
+  CH --> IX[("index.json<br/>local stub · nomic vectors")]
+
+  subgraph EDGE["② EDGE BOX — 100% local · Apple Silicon / MLX · runs WIFI-OFF"]
+    MIC(["🎙 mic"]) --> STT["STT · mlx-whisper"]
+    STT --> SEEK
+    subgraph CORE["core.answer( ) → screen_state"]
+      SEEK{"Retriever.search"} --> GATE["threshold gate<br/>(stub only)"] --> QWEN["Qwen2.5-3B · Ollama<br/>forced JSON · cite-or-refuse"]
+    end
+    QWEN --> TTS["TTS · Kokoro-ONNX"] --> SPK(["🔊 speaker"])
+    QWEN -->|screen_state| UIS["screen · screen.html<br/>SOP card · ⚠ safety · escalation"]
+  end
+
+  MX -. "wifi-on · MossRetriever" .-> SEEK
+  IX -. "wifi-off · CosineRetriever" .-> SEEK
+
+  subgraph DEL["③ DELIVERY — same brain + screen"]
+    OP["operator.html + LiveKit<br/>push-to-talk · WIFI-ON"]
+    OFF["offline_demo.py<br/>WebRTC-free · WIFI-OFF headline"]
+  end
+  OP --> MIC
+  OFF --> MIC
 ```
-No Python packages needed — the scripts use only the standard library.
 
-## Run
+| Layer | Technology | Local / Cloud |
+|---|---|---|
+| Doc ingestion | **Unsiloed** — Parse + Extract → chunks | Cloud · one-time |
+| Retrieval | **Moss** (sub-10ms) · **CosineRetriever** stub | Moss = cloud-load/local-query · stub = fully local |
+| Embeddings | **nomic-embed-text** (Ollama) · Moss built-in | Local |
+| LLM | **Qwen2.5-3B** via **Ollama**, forced-JSON cite-or-refuse | Local |
+| Speech-to-text | **Whisper** via **mlx-whisper** | Local |
+| Text-to-speech | **Kokoro-ONNX** | Local |
+| Voice transport | **LiveKit** (self-hosted) — *wifi-on path only* | Local server |
+| Platform | **Apple Silicon + MLX**, Python 3.13 | Local |
+
+Full contracts, data flows, and the gap register: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Quickstart
+
+**Prereqs** (one time):
 ```bash
-python3 ingest.py                                          # embeds chunks.json -> index.json
-python3 src/ask.py "the labeler on line 3 jammed and shows error E-42"
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+ollama pull qwen2.5:3b && ollama pull nomic-embed-text   # local LLM + embeddings
+.venv/bin/python src/ingest_local.py                     # build the local index from data/
+```
+The first voice run downloads the Whisper + Kokoro models; after that it's fully offline (set `HF_HUB_OFFLINE=1` to guarantee it).
+
+**Run — two modes, one brain + screen:**
+```bash
+# Wifi-OFF headline — WebRTC-free: mic → STT → core.answer → TTS + live screen
+.venv/bin/python src/offline_demo.py        # open http://localhost:8000 , press Enter, speak
+
+# Wifi-ON operator UI — LiveKit push-to-talk in the browser
+livekit-server --config livekit.offline.yaml
+.venv/bin/python src/agent.py dev
+.venv/bin/python src/server.py              # open http://localhost:8000/operator.html
 ```
 
-### The three demo beats
+**Sanity check** (offline, no mic):
 ```bash
-# 1) Grounded answer + safety banner + citation
-python3 src/ask.py "labeler on line 3 jammed, error E-42"
-
-# 2) Policy-grounded refusal — cites the interlock policy and says no
-python3 src/ask.py "can I bypass the safety interlock to keep the line running?"
-
-# 3) Hard refusal via the threshold gate — no SOP covers this, so it escalates
-python3 src/ask.py "how do I recalibrate the servo drive timing?"
+.venv/bin/python src/test_beats.py          # the 4 canonical beats: jam→answer+cite, bypass→escalate, …
 ```
 
-### Prove it's offline
-Turn wifi **off** (toggle in the menu bar), then re-run any command above. It still answers. That's the headline — record a screen capture of this the moment it works.
+## Layout
 
-## Files
-- `chunks.json` — 6 hand-authored labeler-line SOPs with the metadata schema (D7), incl. the LOTO/jam hero procedure and a global interlock policy.
-- `common.py` — local Ollama calls (embed + forced-JSON chat) + cosine; stdlib only.
-- `ingest.py` — embed chunks → `index.json` (the **stub index**).
-- `ask.py` — the loop: retrieve → threshold gate (D8) → Qwen JSON → citation-from-metadata / refuse.
-
-## MOSS SWAP POINT (D6)
-Retrieval is currently cosine over `index.json` (a stub so M1 runs with zero services). To move to Moss:
-- **`ingest.py`** — instead of writing vectors to `index.json`, load each `{id, vector, metadata}` into a Moss index.
-- **`ask.py` → `retrieve()`** — replace the cosine loop with a Moss top-k query (same query vector + the `machine_id` metadata filter). Leave the threshold gate and everything downstream unchanged.
-
-Confirm at **Moss office hours (4pm)**: does Moss take our pre-computed vectors, at what dim/format, and how to filter by metadata.
-
-## Tunables (top of `ask.py`)
-- `SCORE_THRESHOLD = 0.70` — the gate (must match `ask.py`; this is the single source of truth). Tune with real data: it should pass the covered queries (~0.80) and reject the servo-recalibration one (0.648).
-- `TOP_K = 3`.
-
-## Memory note (16GB Mac)
-For the demo, run Ollama with flash attention + quantized KV cache to ease memory pressure:
-```bash
-OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
 ```
-(or set these in the brew service env). Keep answers short so the 3B model stays snappy.
+src/      all Python (paths.py anchors repo-root assets; core/retriever/corpus + entry-points)
+web/      screen.html, operator.html, static/ (bundled livekit-client)
+docs/     ARCHITECTURE.md, TODO.md, phases/   (PRD.md kept local/gitignored)
+data/     the SOP corpus — 2 machines (labeler + cobot) + manifest
+scripts/  Moss smoke/offline tests      .claude/skills/      attic/ (superseded)
+```
+
+## More
+
+- **Architecture & decisions:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · build status: [docs/TODO.md](docs/TODO.md) · phase plans: [docs/phases/](docs/phases/)
+- **Moss retrieval details:** [.claude/skills/moss/](.claude/skills/moss/)
