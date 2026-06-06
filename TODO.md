@@ -19,9 +19,9 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 3. ✅ **`test_beats.py`** — regression over the canonical beats (jam→answer+cite; bypass→escalate; servo→escalate; cobot→answer+cite). *Check: all pass; run after every corpus/threshold change.*
 4. ✅ **Real-corpus stub** — `ingest_local.py` builds `index.json` from `data/machines/*/sops/*.md` via local nomic (same chunker as Moss). *Check: beats pass on the real corpus, wifi-offable.*
 5. ✅ **Unify Moss through `core.answer`** — `RETRIEVER=stub|moss` switch so both paths run the same loop. *Check: Moss beats pass via core.*
-6. ☐ **Phase 2 screen** — `server.py` (stdlib http.server + SSE) + `screen.html` rendering `screen_state` (transcript · answer · steps · citation · ⚠ safety · escalation). *Check: server serves the page and streams a screen_state; typed-input box (the R2 fallback, gap G3).*
-7. ☐ **Scaffold Phase 3** — `agent.py` (LiveKit: push-to-talk → STT → `core.answer` → TTS + data-channel push). Code + run-notes; not hardware-tested.
-8. ☐ **Scaffold Phase 4** — `unsiloed_ingest.py` (PDF → Unsiloed Parse/Extract → chunk → Moss). Code + schema mapping; not run (needs API key).
+6. ✅ **Phase 2 screen** — `server.py` (stdlib http.server + SSE) + `screen.html` rendering `screen_state` (transcript · answer · steps · citation · ⚠ safety · escalation). *Check: server serves the page and streams a screen_state; typed-input box (the R2 fallback, gap G3).*
+7. ✅ **Scaffold Phase 3** *(code written + syntax-checked; needs deps+mic to run — see 🔒)* — `agent.py` (LiveKit: push-to-talk → STT → `core.answer` → TTS + data-channel push). Code + run-notes; not hardware-tested.
+8. ✅ **Scaffold Phase 4** *(code written + syntax-checked; needs Unsiloed API key to run — see 🔒)* — `unsiloed_ingest.py` (PDF → Unsiloed Parse/Extract → chunk → Moss). Code + schema mapping; not run (needs API key).
 9. ☐ Update `ARCHITECTURE.md` / `phases/` statuses + this TODO as items land.
 
 ## 🔒 Needs you (when you wake)
@@ -40,3 +40,10 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
   shared `corpus.py` chunker, `ingest_local.py`. Verified: 4 stub beats (ANSWERED/ESCALATED/
   ESCALATED/ANSWERED) + Moss path answers & cites SOP-1187. On the real 21-chunk corpus the
   stub gate now catches BOTH bypass (0.645) and servo (0.680) deterministically.
+- `b659466` test_beats.py regression gate (item 3) — all 4 beats PASS.
+- Phase 2 screen (item 6): `server.py` (stdlib, /state + /ask + typed-input R2 fallback,
+  inline-no-CDN) + `screen.html` (single applyState renderer). Verified: /ask jam→answered
+  +SOP-1187, bypass→escalated, / serves HTML.
+- Phase 3/4 scaffolds (items 7,8): `agent.py` (LiveKit voice; core.answer is the brain;
+  many TODO(needs-hardware) + flagged 1.5.x API assumptions) and `unsiloed_ingest.py`
+  (PDF→Parse/Extract→corpus schema→Moss; TODO(needs-api-key); field-mapping table). Syntax OK.
