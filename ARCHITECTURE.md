@@ -261,3 +261,23 @@ Built the real index (`moss_ingest.py`: **21 section-chunks** from `data/.../sop
 - **Net (G15):** D8's gate is **stub-only**; on Moss, refusal = strict prompt **+ few-shot**. Two more reasons the stub stays: a real deterministic gate *and* bulletproof-offline. (`moss-mediumlm` or a 7B grounding model may discriminate better — untested.)
 
 Artifacts: `moss_ingest.py`, `retriever.py` (`MossRetriever` = the §3c seam), `moss_demo.py`. Index `manuals` (21 chunks) is live in the project.
+
+---
+
+## 13. Build status — overnight run (branch `build/demo-mvp`, not pushed)
+
+**Done + verified (committed):**
+- **Phase 1.5 refactor** — `core.answer(q, machine, retriever) → screen_state` over the Retriever seam (`CosineRetriever` stub gate 0.70 / `MossRetriever` gate None, G15); `render.py`; thin `ask.py`; shared `corpus.py` chunker; `ingest_local.py`. (`68b33c4`)
+- **`test_beats.py`** — 4-beat regression, all pass on the stub. (`b659466`)
+- **Phase 2 screen** — `server.py` + `screen.html`: one `applyState(screen_state)` renderer, `/state` poll, `/ask` typed-input (the **R2 fallback**), fully inline/no-CDN. Verified jam→answered+SOP-1187, bypass→escalated. (`16416cd`)
+
+**Scaffolded (code + syntax-checked; NOT run — need your hardware/keys):**
+- **Phase 3 `agent.py`** — LiveKit 1.5.x voice; `core.answer` is the brain; publishes `screen_state` over the data channel; `LIVEKIT_URL` defaults to `ws://127.0.0.1:7880`. Flagged 1.5.x API assumptions to verify once deps install. (`6405f2c`)
+- **Phase 4 `unsiloed_ingest.py`** — PDF → Parse/Extract → `corpus` schema → Moss; needs `UNSILOED_API_KEY`; field-mapping table inside. (`6405f2c`)
+
+**Gap-register deltas:** G3 (typed-input) → **addressed** (screen.html). G5 (CDN offline) → **addressed** (inline). G1 (LiveKit cloud default) → **partly** (`agent.py` defaults local; still needs the wifi-off round-trip DoD). G8 → **addressed** (`test_beats.py`).
+
+**New handoff notes:**
+- `MossRetriever.search` returns `page=None`; Phase 4's page-citation DoD needs it to read `md.get("page")` from Moss metadata (page is stored at ingest).
+- Implemented `screen_state` **extends §3b** with `safety_flag: bool` + a bounded `source_excerpt: str` (≤500 chars) — Phase 2/3 consumers rely on these.
+- Real-corpus chunks have no structured `steps[]` (steps live in the section `text` / `source_excerpt`); the numbered-steps panel only fills for corpora that carry `steps[]`. Optional enhancement: parse §4 Procedure into `steps[]` in `corpus.py`.

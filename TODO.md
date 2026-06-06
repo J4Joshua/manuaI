@@ -22,7 +22,7 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 6. ✅ **Phase 2 screen** — `server.py` (stdlib http.server + SSE) + `screen.html` rendering `screen_state` (transcript · answer · steps · citation · ⚠ safety · escalation). *Check: server serves the page and streams a screen_state; typed-input box (the R2 fallback, gap G3).*
 7. ✅ **Scaffold Phase 3** *(code written + syntax-checked; needs deps+mic to run — see 🔒)* — `agent.py` (LiveKit: push-to-talk → STT → `core.answer` → TTS + data-channel push). Code + run-notes; not hardware-tested.
 8. ✅ **Scaffold Phase 4** *(code written + syntax-checked; needs Unsiloed API key to run — see 🔒)* — `unsiloed_ingest.py` (PDF → Unsiloed Parse/Extract → chunk → Moss). Code + schema mapping; not run (needs API key).
-9. ☐ Update `ARCHITECTURE.md` / `phases/` statuses + this TODO as items land.
+9. ✅ Update `ARCHITECTURE.md` (§13 build status + gap deltas) + this TODO as items land.
 
 ## 🔒 Needs you (when you wake)
 - 🔒 **Moss office-hours** (4pm): offline cold-load/persist in Python + token-expiry — protects the wifi-off demo (`ARCHITECTURE.md §12e`)
