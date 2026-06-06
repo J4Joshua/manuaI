@@ -20,6 +20,53 @@ INGESTION PLANE (cloud, one-time, wifi OK)          RUNTIME PLANE (local, wifi O
 
 Everything in the runtime plane talks only to `localhost`.
 
+### Diagram
+
+```mermaid
+flowchart TB
+  subgraph ING["① INGESTION — cloud · one-time · OFF the live query path"]
+    DOCS["SOPs &amp; OEM PDFs<br/>data/machines/*"] --> UNS["Unsiloed<br/>Parse + Extract"] --> CH["corpus.py<br/>section chunks + metadata"]
+  end
+  CH --> MX[("Moss index<br/>cloud-built")]
+  CH --> IX[("index.json<br/>local stub · nomic vectors")]
+
+  subgraph EDGE["② EDGE BOX — 100% local · Apple Silicon / MLX · runs WIFI-OFF"]
+    MIC(["🎙 mic"]) --> STT["STT · mlx-whisper"]
+    STT --> SEEK
+    subgraph CORE["core.answer( ) → screen_state"]
+      SEEK{"Retriever.search"} --> GATE["threshold gate<br/>(stub only)"] --> QWEN["Qwen2.5-3B · Ollama<br/>forced JSON · cite-or-refuse"]
+    end
+    QWEN --> TTS["TTS · Kokoro-ONNX"] --> SPK(["🔊 speaker"])
+    QWEN -->|screen_state| UIS["screen · screen.html<br/>SOP card · ⚠ safety · escalation"]
+  end
+
+  MX -. "wifi-on · MossRetriever" .-> SEEK
+  IX -. "wifi-off · CosineRetriever" .-> SEEK
+
+  subgraph DEL["③ DELIVERY — same brain + screen"]
+    OP["operator.html + LiveKit<br/>push-to-talk · WIFI-ON"]
+    OFF["offline_demo.py<br/>WebRTC-free · WIFI-OFF headline"]
+  end
+  OP --> MIC
+  OFF --> MIC
+```
+
+### Tech stack
+
+| Layer | Technology | Local / Cloud |
+|---|---|---|
+| Doc ingestion | **Unsiloed** — Parse + Extract → structured chunks | Cloud · one-time (off the live path) |
+| Retrieval | **Moss** (sub-10ms semantic) · **CosineRetriever** stub (cosine over `index.json`) | Moss = cloud-load / local-query · stub = fully local |
+| Embeddings | **nomic-embed-text** (Ollama) · Moss built-in (`moss-minilm`) | Local |
+| LLM (reasoning) | **Qwen2.5-3B** via **Ollama** — forced-JSON, cite-or-refuse | Local |
+| Speech-to-text | **Whisper** via **mlx-whisper** (Apple-Silicon GPU) | Local |
+| Text-to-speech | **Kokoro-ONNX** | Local |
+| Voice transport | **LiveKit** (self-hosted, WebRTC) — *wifi-on path only* | Local server |
+| Web UI | `screen.html` / `operator.html` + bundled `livekit-client` | Local · no CDN |
+| Platform | **Apple Silicon + MLX**, Python 3.13 | Local |
+
+> Two delivery modes, one brain: **`offline_demo.py`** (WebRTC-free, the wifi-off headline) and **`operator.html` + LiveKit** (push-to-talk, wifi-on) both call the same `core.answer()` and render the same `screen.html`. The stub retriever — not Moss — is the offline brain (Moss `load_index` is a cloud fetch; see §12a).
+
 ---
 
 ## 2. File structure
