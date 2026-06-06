@@ -160,6 +160,11 @@ KOKORO_VOICES_PATH = os.environ.get("KOKORO_VOICES_PATH", str(MODELS / "voices-v
 # VAD endpointing (push-to-talk still uses VAD to flush the captured window).
 VAD_MIN_SILENCE = float(os.environ.get("VAD_MIN_SILENCE", "0.4"))
 
+# Turn mode: "manual" = push-to-talk via the start/end_turn RPCs (the DEMO default).
+# "auto" = VAD ends turns on a pause — use it for a quick mic test via `agent.py console`
+# or the LiveKit Playground (talk, pause, hear the answer; no custom frontend needed).
+TURN_MODE = os.environ.get("TURN_MODE", "manual").strip().lower()
+
 # Ollama placeholder LLM (never actually called — see module docstring).
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")  # core.py brain uses qwen2.5:3b
@@ -456,15 +461,14 @@ def _build_session() -> AgentSession:
         base_url=f"{OLLAMA_BASE_URL}/v1",
     )
 
-    return AgentSession(
-        stt=stt,
-        llm=llm_placeholder,
-        tts=tts,
-        vad=vad,
-        # Push-to-talk: no automatic VAD turn-ending. 1.5.17 prefers turn_handling
-        # over the deprecated turn_detection= kwarg.
-        turn_handling=TurnHandlingOptions(turn_detection="manual"),
-    )
+    kwargs = dict(stt=stt, llm=llm_placeholder, tts=tts, vad=vad)
+    if TURN_MODE == "manual":
+        # Push-to-talk: no automatic VAD turn-ending — the frontend calls the
+        # start_turn/end_turn RPCs. 1.5.17 prefers turn_handling over turn_detection=.
+        kwargs["turn_handling"] = TurnHandlingOptions(turn_detection="manual")
+    # TURN_MODE == "auto": omit turn_handling -> default VAD endpointing ends turns
+    # (so `agent.py console` / the Playground work with talk-and-pause).
+    return AgentSession(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +496,10 @@ async def entrypoint(ctx: agents.JobContext):
 
     await session.start(room=ctx.room, agent=agent)
 
-    # Push-to-talk: keep the mic silent until the operator holds the button.
-    session.input.set_audio_enabled(False)
+    # Push-to-talk (manual): keep the mic silent until the operator holds the button.
+    # In auto mode (console/Playground quick test) leave the mic on so VAD ends turns.
+    if TURN_MODE == "manual":
+        session.input.set_audio_enabled(False)
 
     # ----- Observability -----
     @session.on("user_input_transcribed")
