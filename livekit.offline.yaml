@@ -1,0 +1,21 @@
+# LiveKit dev server pinned to LOOPBACK so the voice demo survives wifi-off.
+#
+# Why: the default server advertises your machine's LAN IP (e.g. 10.0.0.98) for the
+# WebRTC media path. When wifi drops, that IP disappears and the audio connection dies
+# ("resuming connection failed: wait_pc_connection timed out"). node_ip=127.0.0.1
+# advertises the loopback interface (lo0), which stays up with wifi off. We do NOT set
+# use_external_ip:false or bind_addresses — those bind the UDP socket to the LAN IP.
+#
+# Start everything WIFI-ON (the agent connects, the page goes Ready), THEN turn wifi off.
+#
+# IMPORTANT: stop any running `livekit-server` first (Ctrl-C), then:
+#   livekit-server --config livekit.offline.yaml
+# keys match .env (devkey / secret).
+
+port: 7880
+rtc:
+  udp_port: 7882
+  tcp_port: 7881
+  node_ip: 127.0.0.1
+keys:
+  devkey: secret
