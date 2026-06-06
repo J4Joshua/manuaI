@@ -30,7 +30,7 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 - 🔒 **Pre-pull + verify offline**: Whisper-small-mlx + Kokoro + Silero weights are DOWNLOADED (in `models/` + HF cache); still set `HF_HUB_OFFLINE=1` on the demo box and confirm a wifi-off `voice_smoke.py` run (gap G6)
 - 🔒 **Unsiloed API key** in `.env` → run Phase 4 ingest on the real PDFs
 - 🔒 **Rehearse the Moss wifi-off sequence** with `scripts/moss_offline_test.py` on the demo box (load online → keep process alive → wifi off)
-- 🔒 **Record the backup wifi-off video** (stub path = bulletproof offline)
+- 🔒 **Record the wifi-off video** — run `.venv/bin/python offline_demo.py` with wifi physically OFF (it's WebRTC-free → guaranteed offline), open the screen, press Enter + speak. Screen-record it: this IS the headline moment + the safety-net clip. (LiveKit `operator.html` is wifi-ON only — WebRTC can't go offline.)
 - 🔒 **Harden**: corpus to ~5–10 SOPs, re-tune, 5× dry-run, freeze (Phase 5)
 
 ## Progress log
@@ -61,3 +61,9 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
   serves, JS syntax, 17 API paths resolve, contract matches agent.py). Caught+fixed: `@rtc_session
   (agent_name)` disables auto-dispatch → `/token` now embeds a RoomConfiguration agent dispatch.
   **Live browser talk-test = user's.**
+- WebRTC can't hold a connection wifi-off: the LiveKit agent's subscriber PC fails even with
+  `node_ip` pinned to loopback (`livekit.offline.yaml`). PIVOT → `offline_demo.py`: a WebRTC-FREE
+  wifi-off path — mic → mlx-whisper → core.answer → Kokoro (speaker) + `screen.html` over plain
+  localhost HTTP, **zero network**. `--selftest` PASS (jam→answered+SOP-1187, bypass→escalated,
+  HTTP serve). This is the **wifi-off headline + backup-video path**; LiveKit `operator.html`
+  is the polished **wifi-ON** demo.
