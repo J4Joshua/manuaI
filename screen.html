@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ManuAI — Co-Pilot Display</title>
+<style>
+/* ── Reset + tokens ──────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:         #0d0f14;
+  --surface:    #161b24;
+  --border:     #2a3244;
+  --muted:      #3d4a60;
+  --text:        #e8ecf4;
+  --text-dim:    #8a9ab8;
+  --accent:      #3b82f6;
+  --accent-glow: rgba(59,130,246,.18);
+  --green:       #22c55e;
+  --yellow:      #fbbf24;
+  --yellow-bg:   #3d2e00;
+  --yellow-text: #fde68a;
+  --red:         #ef4444;
+  --red-bg:      #2d0b0b;
+  --red-text:    #fca5a5;
+  --font:        "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono:   "SF Mono", "Fira Code", "Cascadia Mono", ui-monospace, monospace;
+  --radius:      8px;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  min-height: 100vh;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+/* ── Layout shell ────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 100vh;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 24px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ── Shared card base ────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.card-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+/* ── Top bar (header) ────────────────────────────────────────── */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.logo {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  color: var(--accent);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.machine-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.status-chip {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.status-chip.answered  { background: rgba(34,197,94,.15); color: var(--green); border: 1px solid rgba(34,197,94,.3); }
+.status-chip.escalated { background: rgba(239,68,68,.15);  color: var(--red);   border: 1px solid rgba(239,68,68,.3); }
+.status-chip.idle      { background: var(--bg); color: var(--text-dim); border: 1px solid var(--border); }
+
+/* ── Transcript / question panel ─────────────────────────────── */
+#panel-transcript .question-text {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+}
+#panel-transcript .question-text.empty {
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ── Safety banner ───────────────────────────────────────────── */
+#panel-safety {
+  background: var(--yellow-bg);
+  border: 2px solid var(--yellow);
+  color: var(--yellow-text);
+  display: none;
+}
+#panel-safety .safety-headline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+#panel-safety .safety-icon { font-size: 22px; line-height: 1; }
+#panel-safety ul { margin: 0; padding-left: 22px; }
+#panel-safety li { font-size: 15px; line-height: 1.6; }
+
+/* ── Escalation card ─────────────────────────────────────────── */
+#panel-escalation {
+  background: var(--red-bg);
+  border: 2px solid var(--red);
+  color: var(--red-text);
+  display: none;
+}
+#panel-escalation .esc-headline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+#panel-escalation .esc-icon { font-size: 22px; line-height: 1; }
+#panel-escalation .esc-message {
+  font-size: 17px;
+  line-height: 1.55;
+}
+#panel-escalation .esc-footer {
+  margin-top: 10px;
+  font-size: 13px;
+  color: rgba(252,165,165,.7);
+  font-weight: 500;
+}
+
+/* ── Answer block ────────────────────────────────────────────── */
+#panel-answer .answer-text {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--text);
+}
+#panel-answer .answer-text.empty {
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ── Steps panel ─────────────────────────────────────────────── */
+#panel-steps { display: none; }
+#panel-steps .steps-source {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 12px;
+  letter-spacing: .03em;
+}
+#panel-steps ol {
+  list-style: none;
+  counter-reset: step;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#panel-steps ol li {
+  counter-increment: step;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+#panel-steps ol li::before {
+  content: counter(step);
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-glow);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Citation cards ──────────────────────────────────────────── */
+#panel-citations { display: none; }
+.cite-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cite-card {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.cite-id {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cite-title {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+/* ── Source excerpt ──────────────────────────────────────────── */
+#panel-source { display: none; }
+#panel-source .excerpt {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Score strip ─────────────────────────────────────────────── */
+#panel-score { display: none; }
+#panel-score .score-row {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.score-item { display: flex; flex-direction: column; gap: 2px; }
+.score-value {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.score-key {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.score-sep {
+  width: 1px;
+  height: 36px;
+  background: var(--border);
+}
+.gate-label {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.gate-pass { background: rgba(34,197,94,.12); color: var(--green); border: 1px solid rgba(34,197,94,.25); }
+.gate-fail { background: rgba(239,68,68,.12);  color: var(--red);  border: 1px solid rgba(239,68,68,.25); }
+.gate-na   { background: var(--bg); color: var(--text-dim); border: 1px solid var(--border); }
+
+/* ── Typed-input area (R2 fallback) ──────────────────────────── */
+.input-bar {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  align-items: center;
+}
+.input-bar input[type=text] {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 16px;
+  padding: 10px 14px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color .15s;
+}
+.input-bar input[type=text]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.input-bar input[type=text]::placeholder { color: var(--muted); }
+.machine-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  padding: 10px 10px;
+  font-family: var(--font);
+  outline: none;
+  cursor: pointer;
+}
+.btn-ask {
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  border: none;
+  border-radius: var(--radius);
+  padding: 10px 22px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity .15s;
+}
+.btn-ask:hover  { opacity: .88; }
+.btn-ask:active { opacity: .74; }
+.btn-ask:disabled { opacity: .4; cursor: wait; }
+.spinner {
+  display: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Transitions ─────────────────────────────────────────────── */
+.card, #panel-safety, #panel-escalation {
+  transition: opacity .2s;
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ── Top bar ─────────────────────────────────────────────── -->
+  <header class="top-bar">
+    <span class="logo">ManuAI</span>
+    <span id="hdr-machine" class="machine-badge">—</span>
+    <span id="hdr-status" class="status-chip idle">Idle</span>
+  </header>
+
+  <!-- ── Main content ────────────────────────────────────────── -->
+  <main class="content">
+
+    <!-- Panel: transcript -->
+    <div id="panel-transcript" class="card">
+      <div class="card-label">Transcript</div>
+      <div id="question-text" class="question-text empty">Waiting for a question…</div>
+    </div>
+
+    <!-- Panel: safety banner (hidden until needed) -->
+    <div id="panel-safety" class="card">
+      <div class="safety-headline">
+        <span class="safety-icon">&#9888;</span>
+        <span>Safety First — Lockout / Tagout Applies</span>
+      </div>
+      <ul id="safety-list"></ul>
+    </div>
+
+    <!-- Panel: escalation card (hidden until needed) -->
+    <div id="panel-escalation" class="card">
+      <div class="esc-headline">
+        <span class="esc-icon">&#128721;</span>
+        <span>Stop — Escalating to Supervisor</span>
+      </div>
+      <div id="esc-message" class="esc-message"></div>
+      <div class="esc-footer">Do not improvise on safety-critical steps. A supervisor has been flagged.</div>
+    </div>
+
+    <!-- Panel: answer -->
+    <div id="panel-answer" class="card">
+      <div class="card-label">Answer</div>
+      <div id="answer-text" class="answer-text empty">—</div>
+    </div>
+
+    <!-- Panel: steps -->
+    <div id="panel-steps" class="card">
+      <div class="card-label">Steps</div>
+      <div id="steps-source" class="steps-source"></div>
+      <ol id="steps-list"></ol>
+    </div>
+
+    <!-- Panel: citations -->
+    <div id="panel-citations" class="card">
+      <div class="card-label">Source</div>
+      <div id="cite-grid" class="cite-grid"></div>
+    </div>
+
+    <!-- Panel: source excerpt -->
+    <div id="panel-source" class="card">
+      <div class="card-label">SOP Excerpt</div>
+      <pre id="source-text" class="excerpt"></pre>
+    </div>
+
+    <!-- Panel: score strip -->
+    <div id="panel-score" class="card">
+      <div class="card-label">Retrieval Scores</div>
+      <div class="score-row">
+        <div class="score-item">
+          <span id="score-top" class="score-value">—</span>
+          <span class="score-key">Top Score</span>
+        </div>
+        <div class="score-sep"></div>
+        <div class="score-item">
+          <span id="score-thr" class="score-value">—</span>
+          <span class="score-key">Threshold</span>
+        </div>
+        <div class="score-sep"></div>
+        <span id="gate-label" class="gate-label gate-na">—</span>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Typed-input bar (R2 fallback — gap G3) ──────────────── -->
+  <footer class="input-bar">
+    <input
+      type="text"
+      id="ask-input"
+      placeholder="Type a question for the machine operator… (R2 fallback)"
+      autocomplete="off"
+    />
+    <select id="machine-select" class="machine-select">
+      <option value="labeler-line3">labeler-line3</option>
+      <option value="cobot-cellA">cobot-cellA</option>
+    </select>
+    <div class="spinner" id="spinner"></div>
+    <button class="btn-ask" id="btn-ask">Ask</button>
+  </footer>
+
+</div><!-- /shell -->
+
+<script>
+// ── applyState: THE ONLY RENDER PATH ─────────────────────────────────────────
+// Phase 3 can swap the data source (LiveKit data channel) without touching this function.
+function applyState(s) {
+  if (!s || typeof s !== 'object') return;
+
+  const status    = s.status   || 'idle';
+  const question  = s.question || '';
+  const answer    = s.answer   || '';
+  const citations = Array.isArray(s.citations)      ? s.citations      : [];
+  const steps     = Array.isArray(s.steps)          ? s.steps          : [];
+  const warnings  = Array.isArray(s.safety_warnings)? s.safety_warnings: [];
+  const safetyFlag= !!s.safety_flag;
+  const stepsSource = s.steps_source || null;
+  const sourceExcerpt = s.source_excerpt || '';
+  const topScore  = typeof s.top_score  === 'number' ? s.top_score  : null;
+  const threshold = typeof s.threshold  === 'number' ? s.threshold  : null;
+  const machineId = s.machine_id || '';
+
+  // ── Header ──
+  var hdrMachine = document.getElementById('hdr-machine');
+  var hdrStatus  = document.getElementById('hdr-status');
+  hdrMachine.textContent = machineId || '—';
+  hdrStatus.textContent  = statusLabel(status);
+  hdrStatus.className    = 'status-chip ' + (status === 'idle' ? 'idle' : status);
+
+  // ── Transcript ──
+  var qEl = document.getElementById('question-text');
+  if (question) {
+    qEl.textContent = '“' + question + '”';
+    qEl.classList.remove('empty');
+  } else {
+    qEl.textContent = 'Waiting for a question…';
+    qEl.classList.add('empty');
+  }
+
+  // ── Safety banner: show when safety_flag OR non-empty warnings ──
+  var panelSafety = document.getElementById('panel-safety');
+  var safetyList  = document.getElementById('safety-list');
+  var showSafety  = (safetyFlag || warnings.length > 0) && status !== 'escalated';
+  panelSafety.style.display = showSafety ? '' : 'none';
+  safetyList.innerHTML = '';
+  if (showSafety) {
+    warnings.forEach(function(w) {
+      var li = document.createElement('li');
+      li.textContent = w;
+      safetyList.appendChild(li);
+    });
+  }
+
+  // ── Escalation card ──
+  var panelEsc = document.getElementById('panel-escalation');
+  var escMsg   = document.getElementById('esc-message');
+  panelEsc.style.display = status === 'escalated' ? '' : 'none';
+  escMsg.textContent = answer;
+
+  // ── Answer block (always shown when not idle; hidden message for escalation is
+  //    shown in the escalation card instead) ──
+  var panelAnswer = document.getElementById('panel-answer');
+  var answerEl    = document.getElementById('answer-text');
+  if (status === 'idle') {
+    answerEl.textContent = '—';
+    answerEl.classList.add('empty');
+    panelAnswer.style.display = '';
+  } else if (status === 'escalated') {
+    // escalation card takes the spotlight; hide the redundant answer panel
+    panelAnswer.style.display = 'none';
+  } else {
+    panelAnswer.style.display = '';
+    answerEl.textContent = answer || '—';
+    answerEl.classList.toggle('empty', !answer);
+  }
+
+  // ── Steps panel ──
+  var panelSteps = document.getElementById('panel-steps');
+  var stepsList  = document.getElementById('steps-list');
+  var stepsSourceEl = document.getElementById('steps-source');
+  if (status === 'answered' && steps.length > 0) {
+    panelSteps.style.display = '';
+    stepsList.innerHTML = '';
+    steps.forEach(function(step) {
+      var li = document.createElement('li');
+      li.textContent = step;
+      stepsList.appendChild(li);
+    });
+    if (stepsSource) {
+      var parts = [];
+      if (stepsSource.sop_id)  parts.push(stepsSource.sop_id);
+      if (stepsSource.section) parts.push('§' + stepsSource.section);
+      if (stepsSource.procedure_title) parts.push('— ' + stepsSource.procedure_title);
+      stepsSourceEl.textContent = parts.join(' ');
+    } else {
+      stepsSourceEl.textContent = '';
+    }
+  } else {
+    panelSteps.style.display = 'none';
+  }
+
+  // ── Citations ──
+  var panelCite = document.getElementById('panel-citations');
+  var citeGrid  = document.getElementById('cite-grid');
+  if (status === 'answered' && citations.length > 0) {
+    panelCite.style.display = '';
+    citeGrid.innerHTML = '';
+    citations.forEach(function(c) {
+      var card = document.createElement('div');
+      card.className = 'cite-card';
+
+      var pageStr = (c.page !== null && c.page !== undefined) ? ' (p.' + c.page + ')' : '';
+      var idStr   = (c.sop_id || '') + (c.section ? ' §' + c.section : '') + pageStr;
+
+      var idEl = document.createElement('span');
+      idEl.className = 'cite-id';
+      idEl.textContent = idStr;
+
+      var titleEl = document.createElement('span');
+      titleEl.className = 'cite-title';
+      titleEl.textContent = c.procedure_title || '';
+
+      card.appendChild(idEl);
+      card.appendChild(titleEl);
+      citeGrid.appendChild(card);
+    });
+  } else {
+    panelCite.style.display = 'none';
+  }
+
+  // ── Source excerpt ──
+  var panelSource = document.getElementById('panel-source');
+  var sourceEl    = document.getElementById('source-text');
+  if (status === 'answered' && sourceExcerpt) {
+    panelSource.style.display = '';
+    sourceEl.textContent = sourceExcerpt;
+  } else {
+    panelSource.style.display = 'none';
+  }
+
+  // ── Score strip ──
+  var panelScore = document.getElementById('panel-score');
+  if (status !== 'idle') {
+    panelScore.style.display = '';
+    document.getElementById('score-top').textContent =
+      topScore !== null ? topScore.toFixed(3) : '—';
+    document.getElementById('score-thr').textContent =
+      threshold !== null ? threshold.toFixed(2) : 'n/a';
+
+    var gateEl = document.getElementById('gate-label');
+    if (threshold === null) {
+      gateEl.textContent = 'LLM gate';
+      gateEl.className   = 'gate-label gate-na';
+    } else if (topScore !== null && topScore >= threshold) {
+      gateEl.textContent = 'Gate pass';
+      gateEl.className   = 'gate-label gate-pass';
+    } else {
+      gateEl.textContent = 'Gate fail';
+      gateEl.className   = 'gate-label gate-fail';
+    }
+  } else {
+    panelScore.style.display = 'none';
+  }
+}
+
+function statusLabel(s) {
+  if (s === 'answered')  return 'Answered';
+  if (s === 'escalated') return 'Escalated';
+  return 'Idle';
+}
+
+// ── Polling: GET /state every 600ms ──────────────────────────────────────────
+var lastSeen = null;
+function poll() {
+  fetch('/state')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var sig = JSON.stringify([data.question, data.status, data.answer]);
+      if (sig !== lastSeen) {
+        lastSeen = sig;
+        applyState(data);
+      }
+    })
+    .catch(function(e){ /* silently ignore — server may be restarting */ });
+}
+setInterval(poll, 600);
+poll(); // immediate first poll
+
+// ── Typed-input box (R2 fallback — gap G3) ───────────────────────────────────
+var askInput     = document.getElementById('ask-input');
+var askBtn       = document.getElementById('btn-ask');
+var spinnerEl    = document.getElementById('spinner');
+var machineSelect= document.getElementById('machine-select');
+
+function doAsk() {
+  var q = askInput.value.trim();
+  if (!q) return;
+  var machine = machineSelect.value || 'labeler-line3';
+
+  askBtn.disabled = true;
+  spinnerEl.style.display = 'block';
+
+  var url = '/ask?q=' + encodeURIComponent(q) + '&machine=' + encodeURIComponent(machine);
+  fetch(url)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      applyState(data);
+      lastSeen = JSON.stringify([data.question, data.status, data.answer]);
+      askInput.value = '';
+    })
+    .catch(function(e){
+      console.error('Ask failed:', e);
+    })
+    .finally(function(){
+      askBtn.disabled = false;
+      spinnerEl.style.display = 'none';
+    });
+}
+
+askBtn.addEventListener('click', doAsk);
+askInput.addEventListener('keydown', function(e){
+  if (e.key === 'Enter') doAsk();
+});
+</script>
+
+</body>
+</html>
