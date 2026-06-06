@@ -1,0 +1,137 @@
+[
+  {
+    "id": "SOP-1187-4.2",
+    "sop_id": "SOP-1187",
+    "section": "§4.2",
+    "page": 12,
+    "machine_id": "labeler-line-3",
+    "doc_type": "troubleshooting",
+    "procedure_title": "Clearing a Label Jam",
+    "error_codes": ["E-42"],
+    "safety_flag": true,
+    "safety_warnings": [
+      "Perform Lockout/Tagout (LOTO) on the applicator before reaching into the machine.",
+      "The thermal printhead may be hot — allow it to cool before contact."
+    ],
+    "steps": [
+      "Press the line E-stop and perform Lockout/Tagout on the applicator.",
+      "Open the applicator guard door and locate the jammed label web at the peel bar.",
+      "Gently remove torn labels and adhesive residue from the peel bar and rollers.",
+      "Reseat the label web under the sensor and over the peel bar.",
+      "Close the guard, remove LOTO, and press RESET to clear E-42.",
+      "Run a test cycle and verify clean label placement before resuming production."
+    ],
+    "text": "Clearing a Label Jam (error E-42) on the Line 3 thermal-transfer labeler. Symptom: the applicator stops and displays E-42 when the label web jams at the peel bar or wraps a roller. Safety: perform Lockout/Tagout on the applicator before reaching in; the thermal printhead may be hot, so allow it to cool. Procedure: E-stop and LOTO the applicator, open the guard door, remove torn labels and adhesive from the peel bar and rollers, reseat the label web under the sensor and over the peel bar, close the guard, remove LOTO, press RESET to clear E-42, then run a test cycle and verify clean placement before resuming."
+  },
+  {
+    "id": "SOP-1187-4.5",
+    "sop_id": "SOP-1187",
+    "section": "§4.5",
+    "page": 15,
+    "machine_id": "labeler-line-3",
+    "doc_type": "troubleshooting",
+    "procedure_title": "Correcting Label Skew or Misalignment",
+    "error_codes": ["E-43"],
+    "safety_flag": false,
+    "safety_warnings": [],
+    "steps": [
+      "Check that label stock is loaded straight on the unwind mandrel and tracking through the guides.",
+      "Verify the product sensor position and the apply-timing offset.",
+      "Inspect the peel bar height and tamp pad for adhesive buildup.",
+      "Adjust the web guide and re-run the apply-timing calibration.",
+      "Clear E-43 and confirm placement on five test products."
+    ],
+    "text": "Correcting Label Skew or Misalignment (error E-43) on the Line 3 labeler. Symptom: labels apply crooked, off-position, or wrinkled, and the controller may flag E-43 after repeated misplacement. Procedure: check that label stock is loaded straight on the unwind mandrel and tracking through the guides, verify the product sensor position and apply-timing offset, inspect the peel bar height and tamp pad for adhesive buildup, adjust the web guide and re-run the apply-timing calibration, then clear E-43 and confirm placement on five test products."
+  },
+  {
+    "id": "SOP-1142-3.1",
+    "sop_id": "SOP-1142",
+    "section": "§3.1",
+    "page": 7,
+    "machine_id": "labeler-line-3",
+    "doc_type": "troubleshooting",
+    "procedure_title": "Reloading Ribbon and Label Stock",
+    "error_codes": ["E-17"],
+    "safety_flag": true,
+    "safety_warnings": [
+      "Allow the thermal printhead to cool before threading ribbon.",
+      "Keep fingers clear of the label cutter."
+    ],
+    "steps": [
+      "Open the print module and let the printhead cool.",
+      "Remove the spent ribbon core and label core.",
+      "Load the new label roll on the supply spindle and thread it through the guides and under the printhead.",
+      "Load the new ribbon over the printhead per the threading diagram and take up slack.",
+      "Close the module, clear E-17, and print a test label to check darkness."
+    ],
+    "text": "Reloading Ribbon and Label Stock (error E-17, media/ribbon out) on the Line 3 labeler. Symptom: printing stops and E-17 appears when the thermal ribbon or label roll runs out. Safety: the printhead is hot during operation, so allow it to cool before threading new ribbon, and keep fingers clear of the cutter. Procedure: open the print module and let the printhead cool, remove the spent ribbon and label cores, load the new label roll on the supply spindle and thread it through the guides and under the printhead, load the new ribbon over the printhead following the threading diagram and take up slack, close the module, clear E-17, and print a test label to check darkness."
+  },
+  {
+    "id": "SOP-1190-2.3",
+    "sop_id": "SOP-1190",
+    "section": "§2.3",
+    "page": 4,
+    "machine_id": "labeler-line-3",
+    "doc_type": "maintenance",
+    "procedure_title": "Daily Thermal Printhead Cleaning",
+    "error_codes": [],
+    "safety_flag": true,
+    "safety_warnings": [
+      "Power off and lock out the printer before cleaning.",
+      "Allow the printhead to cool; use only the approved cleaning pen or 99% IPA — never metal tools."
+    ],
+    "steps": [
+      "Power down and lock out the printer.",
+      "Open the print module and let the printhead cool.",
+      "Gently wipe the printhead element along its length with the cleaning pen.",
+      "Clean the platen roller and label sensor; allow solvent to dry fully.",
+      "Close the module, power on, and print a test label to confirm quality."
+    ],
+    "text": "Daily Thermal Printhead Cleaning on the Line 3 labeler (preventive maintenance, start of shift). Safety: power off and lock out the printer and allow the printhead to cool before cleaning; use only the approved cleaning pen or 99% isopropyl alcohol and never metal tools. Procedure: power down and lock out the printer, open the print module and let the printhead cool, gently wipe the printhead element along its length with the cleaning pen, clean the platen roller and label sensor, allow solvent to dry fully, close the module, power on, and print a test label to confirm print quality."
+  },
+  {
+    "id": "SAFE-001-1.4",
+    "sop_id": "SAFE-001",
+    "section": "§1.4",
+    "page": 2,
+    "machine_id": "all",
+    "doc_type": "safety",
+    "procedure_title": "Machine Guarding & Interlock Policy",
+    "error_codes": [],
+    "safety_flag": true,
+    "safety_warnings": [
+      "Never bypass, defeat, jumper, or override a safety interlock or guard.",
+      "If a guard or interlock is faulty: LOTO, tag the machine out of service, and notify a supervisor."
+    ],
+    "steps": [
+      "Stop the machine and apply Lockout/Tagout.",
+      "Tag the equipment out of service.",
+      "Notify your supervisor or maintenance immediately.",
+      "Do not resume production until the safety device is repaired and verified."
+    ],
+    "text": "Machine Guarding and Safety Interlock Policy. Safety interlocks and guards on the labeling and packaging lines must never be bypassed, defeated, jumpered, or overridden to keep a line running. If an interlock or guard is faulty, or a machine runs with a guard open, stop the machine, apply Lockout/Tagout, tag the equipment out of service, and notify your supervisor or maintenance immediately. Operators are not authorized to modify or disable safety devices under any circumstances. Resuming production with a defeated interlock is prohibited and is grounds for immediate stop-work."
+  },
+  {
+    "id": "SOP-1142-6.1",
+    "sop_id": "SOP-1142",
+    "section": "§6.1",
+    "page": 21,
+    "machine_id": "labeler-line-3",
+    "doc_type": "operation",
+    "procedure_title": "Restarting the Line After an Emergency Stop",
+    "error_codes": [],
+    "safety_flag": true,
+    "safety_warnings": [
+      "Before resetting, confirm the hazard is cleared and all personnel are clear of the line.",
+      "Ensure all guard doors are closed before reset."
+    ],
+    "steps": [
+      "Identify and correct the condition that triggered the E-stop.",
+      "Verify no one is reaching into the machine and all guard doors are closed.",
+      "Twist-release the pressed E-stop button.",
+      "Press the blue RESET / POWER-ON button on the HMI.",
+      "Restart the conveyor and labeler in sequence and observe the first cycles."
+    ],
+    "text": "Restarting the Line After an Emergency Stop on Line 3. Safety: before resetting an E-stop, confirm the cause is resolved and that all personnel are clear of the line and guards are closed. Procedure: identify and correct the condition that triggered the E-stop, verify no one is reaching into the machine, ensure all guard doors are closed, twist-release the pressed E-stop button, press the blue RESET/POWER-ON button on the HMI, then restart the conveyor and labeler in sequence and observe the first cycles before leaving the station."
+  }
+]
