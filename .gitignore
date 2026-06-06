@@ -28,3 +28,6 @@ models/
 # Logs / scratch
 *.log
 .audit/
+
+# Planning docs — kept local, out of the repo
+PRD.md
