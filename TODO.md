@@ -51,3 +51,13 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
   llm_node, push-to-talk RPC, screen_state over data channel) — `agent.py check` PASS + worker
   registers with livekit-server. Live mic round-trip = user's test. Fixed .env: WHISPER_MODEL
   needs `-mlx` suffix; empty HF_TOKEN breaks downloads (handled in code).
+- Voice LIVE-verified (console): mic → STT → core.answer → spoken answer works. Fixed Whisper
+  mis-detecting English as Chinese by pinning `language="en"` (was stored, never passed).
+- Unified operator frontend (Phase 2↔3 integration): `operator.html` (reuses screen.html
+  `applyState` byte-identical + hold-to-talk button + status pill + debug log) + bundled
+  `static/livekit-client.umd.min.js` (2.19.1, no CDN) + `static/operator.js` (token → connect →
+  push-to-talk RPC → play agent audio → render `screen_state` from the LiveKit data channel) +
+  `server.py` routes `/operator.html` `/static` `/token`. Headless-verified (token+dispatch,
+  serves, JS syntax, 17 API paths resolve, contract matches agent.py). Caught+fixed: `@rtc_session
+  (agent_name)` disables auto-dispatch → `/token` now embeds a RoomConfiguration agent dispatch.
+  **Live browser talk-test = user's.**
