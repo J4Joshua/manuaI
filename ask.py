@@ -1,123 +1,41 @@
-"""M1 query loop — the SACRED loop, runnable with WIFI OFF:
+#!/usr/bin/env python3
+"""Thin CLI shim over core.answer + render (ARCHITECTURE.md §6).
 
-  question -> local embed -> retrieve + score -> THRESHOLD GATE -> Qwen (forced JSON)
-           -> grounded answer with citation-from-metadata, OR refuse + escalate.
+    .venv/bin/python ask.py "the labeler on line 3 jammed and shows error E-42"
+    .venv/bin/python ask.py --machine cobot-cellA "robot in cell A shows fault C4"
+    .venv/bin/python ask.py --retriever moss "..."   # sponsor-tech path (needs wifi to load)
 
-Everything runs locally via Ollama. Turn wifi off; it still works.
-Run:  python3 ask.py "the labeler on line 3 jammed and shows error E-42"
+stub  (default) → CosineRetriever over index.json  — bulletproof-offline.
+moss            → MossClient + MossRetriever        — load_index is the one network step.
 """
 import argparse
-import json
+import asyncio
 import os
-import sys
 
-from common import embed, chat_json, cosine
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-# --- tunables (tune with real data / confirm threshold at Moss office hours) ---
-TOP_K = 3
-SCORE_THRESHOLD = 0.70       # top-hit cosine below this -> deterministic refuse (tuned to demo corpus; retune with real data)
-DEFAULT_MACHINE = "labeler-line-3"
-
-SYSTEM = """You are ManuAI, a factory-floor assistant for machine operators.
-Answer ONLY from the SOP excerpts in the user message. Rules:
-- Use ONLY information in the excerpts. Never invent steps, codes, or values.
-- "answer" tells the operator what to DO in 1-2 short sentences, leading with the most
-  critical safety action. Use this shape (fill ONLY from this question's excerpts; do not
-  copy these words): "First <critical safety action>, then <next key action>." Never write
-  "refer to SOP X" and never mention SOP numbers in the answer — the citation handles that.
-- "used_chunk_ids": cite ONLY the excerpts you actually used — usually just one.
-- If the excerpts contain no approved procedure for the question, do NOT guess: set
-  "escalate" true and briefly say you are escalating to a supervisor in "answer".
-Return ONLY a JSON object with exactly these keys:
-  "answer": string,
-  "used_chunk_ids": array of the excerpt ids you actually used,
-  "escalate": boolean"""
+import core
+import render
+from retriever import CosineRetriever, MossRetriever, make_client
 
 
-def retrieve(question, machine):
-    index_path = os.path.join(HERE, "index.json")
-    if not os.path.exists(index_path):
-        sys.exit("No index.json — run `python3 ingest.py` first.")
-    qv = embed(question, kind="query")
-    with open(index_path) as f:
-        index = json.load(f)
-    # metadata filter: this machine's docs + global ("all") policies
-    cands = [c for c in index if c.get("machine_id") in (machine, "all")] or index
-    for c in cands:
-        c["score"] = cosine(qv, c["vector"])
-    return sorted(cands, key=lambda c: c["score"], reverse=True)[:TOP_K]
-
-
-def refuse(reason):
-    print("\n" + "=" * 66)
-    print("  [STOP]  NO APPROVED PROCEDURE — ESCALATING TO SUPERVISOR")
-    print("=" * 66)
-    print(f"  {reason}")
-    print("  Supervisor flagged. Do not improvise on safety-critical steps.")
-    print("=" * 66 + "\n")
+def build_retriever(kind):
+    if kind == "moss":
+        client = make_client()
+        index = os.getenv("MOSS_INDEX_NAME", "manuals")
+        alpha = float(os.getenv("MOSS_ALPHA", "0.8"))
+        return MossRetriever(client, index, alpha=alpha)
+    return CosineRetriever()
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="ManuAI — grounded, cited, refuses-or-escalates.")
     ap.add_argument("question")
-    ap.add_argument("--machine", default=DEFAULT_MACHINE)
+    ap.add_argument("--machine", default=os.getenv("MACHINE_ID", "labeler-line3"))
+    ap.add_argument("--retriever", choices=("stub", "moss"), default="stub")
     args = ap.parse_args()
 
-    hits = retrieve(args.question, args.machine)
-    top = hits[0]
-
-    print(f'\n[mic] Operator: "{args.question}"   [machine: {args.machine}]')
-    print(f"      top match: {top['id']}   score={top['score']:.3f}   (threshold {SCORE_THRESHOLD})")
-
-    # THRESHOLD GATE — deterministic; does NOT depend on the 3B model's judgment
-    if top["score"] < SCORE_THRESHOLD:
-        refuse("No SOP in the local index matches closely enough to answer safely.")
-        return
-
-    excerpts = "\n\n".join(f'[{h["id"]}] {h["procedure_title"]}\n{h["text"]}' for h in hits)
-    raw = chat_json(SYSTEM, f"Question: {args.question}\n\nSOP excerpts:\n{excerpts}")
-    try:
-        out = json.loads(raw)
-    except json.JSONDecodeError:
-        refuse("Model did not return valid JSON — retry, or check Ollama is running.")
-        return
-
-    by_id = {h["id"]: h for h in hits}
-    cited = [by_id[str(i).strip("[]")] for i in out.get("used_chunk_ids", [])
-             if str(i).strip("[]") in by_id]
-
-    if out.get("escalate") or not cited:
-        refuse(out.get("answer") or "Could not ground an answer in the SOPs.")
-        return
-
-    # safety warnings come from the cited chunks' REAL metadata -> un-fakeable
-    safety = []
-    for c in cited:
-        for w in c.get("safety_warnings", []):
-            if w not in safety:
-                safety.append(w)
-
-    print("\n" + "=" * 66)
-    if safety:
-        print("  [!] SAFETY FIRST")
-        for w in safety:
-            print(f"      - {w}")
-        print("-" * 66)
-    print("  [answer]")
-    print(f"      {out['answer']}")
-    primary = next((c for c in cited if c.get("steps")), None)
-    if primary:
-        print("-" * 66)
-        print(f"  [steps]  {primary['sop_id']} {primary['section']} — {primary['procedure_title']}")
-        for i, s in enumerate(primary["steps"], 1):
-            print(f"      {i}. {s}")
-    print("-" * 66)
-    print("  [source]" if len(cited) == 1 else "  [sources]")
-    for c in cited:
-        print(f"      {c['sop_id']} {c['section']} (p.{c['page']}) — {c['procedure_title']}")
-    print("=" * 66 + "\n")
+    retriever = build_retriever(args.retriever)
+    state = asyncio.run(core.answer(args.question, args.machine, retriever))
+    render.render(state)
 
 
 if __name__ == "__main__":

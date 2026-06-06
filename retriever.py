@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""Retriever seam (ARCHITECTURE.md §3c).
+"""Retriever seam (ARCHITECTURE.md §3c) — the Moss swap point.
 
-`MossRetriever.search(question, machine_id, k) -> list[record]` is the Moss
-implementation of the seam. The offline-bulletproof CosineRetriever stub lives in
-ask.py today; both return the same record shape so `answer()` is source-agnostic.
+Both retrievers expose the SAME async interface so `core.answer()` is source-agnostic:
 
-record = {id, score, text, machine_id, sop_id, section, title, doc_type,
-          safety_flag(bool), fault_codes(str)}
+    async def search(self, question, machine_id, k=5) -> list[record]
+    class attr  threshold: float | None
+
+A `record` = chunk metadata + `text` + `score` (NO vector). Both retrievers return
+records with IDENTICAL keys:
+    id, score(float), text, machine_id, sop_id, section, procedure_title,
+    doc_type, page(None), safety_flag(bool), fault_codes(str)
+
+- CosineRetriever — the offline-bulletproof stub. threshold = 0.70 (raw nomic cosine
+  is non-normalized, so an absolute gate is meaningful). Loads index.json once.
+- MossRetriever  — the sponsor-tech path. threshold = None (Moss `.score` is per-query
+  normalized, so NO usable absolute gate exists — see ARCHITECTURE.md §12f / G15;
+  refusal on the Moss path comes from the LLM task-match few-shot, not a gate).
 """
+import asyncio
+import json
 import os
 from pathlib import Path
 
 import inferedge_moss as moss
 from inferedge_moss import QueryOptions
+
+from common import cosine, embed
 
 HERE = Path(__file__).resolve().parent
 
@@ -36,7 +49,44 @@ def make_client():
     return moss.MossClient(pid, key)
 
 
+class CosineRetriever:
+    """Offline stub: cosine over a local index.json built by ingest_local.py.
+
+    Cold-loads from disk with zero network, ever — the bulletproof-offline path and
+    the backup-video engine (ARCHITECTURE.md §12a)."""
+
+    threshold = 0.70
+
+    def __init__(self, index_path=None):
+        path = Path(index_path) if index_path else HERE / "index.json"
+        if not path.exists():
+            raise SystemExit(f"No {path.name} — run `.venv/bin/python ingest_local.py` first.")
+        with open(path) as f:
+            self.index = json.load(f)
+
+    async def search(self, question, machine_id, k=5):
+        # Embed the query LOCALLY (nomic) off the event loop — the sync urllib call
+        # would otherwise block LiveKit's async loop (G9).
+        qv = await asyncio.to_thread(embed, question, "query")
+        # metadata filter: this machine's docs + global ("all") policies; fall back to
+        # the whole index only if the filter is empty (G10 — fine at this corpus size).
+        cands = [c for c in self.index if c.get("machine_id") in (machine_id, "all")] or self.index
+        scored = []
+        for c in cands:
+            rec = {k2: v for k2, v in c.items() if k2 != "vector"}
+            rec["score"] = float(cosine(qv, c["vector"]))
+            scored.append(rec)
+        scored.sort(key=lambda r: r["score"], reverse=True)
+        return scored[:k]
+
+
 class MossRetriever:
+    """Sponsor-tech path: Moss top-k hybrid query (alpha=0.8). Lets Moss embed (raw
+    text in). load_index is the ONE network step — do it ONLINE, keep the process
+    alive, then queries run locally even with wifi off (ARCHITECTURE.md §12a / G14)."""
+
+    threshold = None  # Moss .score is per-query normalized — no usable absolute gate (G15)
+
     def __init__(self, client, index_name, alpha=0.8):
         self.client = client
         self.index = index_name
@@ -44,8 +94,6 @@ class MossRetriever:
         self._loaded = False
 
     async def ensure_loaded(self):
-        # The NETWORK step (~6s cloud fetch). Do it ONLINE, keep the process alive,
-        # then queries below run locally even with wifi off (see ARCHITECTURE.md G14).
         if not self._loaded:
             await self.client.load_index(self.index)
             self._loaded = True
@@ -66,8 +114,9 @@ class MossRetriever:
                 "machine_id": md.get("machine_id"),
                 "sop_id": md.get("sop_id"),
                 "section": md.get("section"),
-                "title": md.get("title"),
+                "procedure_title": md.get("procedure_title") or md.get("title"),
                 "doc_type": md.get("doc_type"),
+                "page": None,
                 "safety_flag": str(md.get("safety_flag")).lower() == "true",
                 "fault_codes": md.get("fault_codes", ""),
             })

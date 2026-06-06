@@ -15,10 +15,10 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 
 ## Tonight — autonomous (verifiable; commit each)
 1. ☐ **Baseline commit** of all current work on `build/demo-mvp`
-2. ☐ **Phase 1.5 refactor** — `core.answer(question, machine, retriever) → screen_state`; `retriever.py` holds **both** `CosineRetriever` (stub) and `MossRetriever` behind one `search()` seam; `render.py` (terminal); `ask.py` becomes a thin CLI. Unify the system prompt (with the few-shot task-match example). *Check: the beats still pass on the stub.*
+2. ✅ **Phase 1.5 refactor** — `core.answer(question, machine, retriever) → screen_state`; `retriever.py` holds **both** `CosineRetriever` (stub) and `MossRetriever` behind one `search()` seam; `render.py` (terminal); `ask.py` becomes a thin CLI. Unify the system prompt (with the few-shot task-match example). *Check: the beats still pass on the stub.*
 3. ☐ **`test_beats.py`** — regression over the canonical beats (jam→answer+cite; bypass→escalate; servo→escalate; cobot→answer+cite). *Check: all pass; run after every corpus/threshold change.*
-4. ☐ **Real-corpus stub** — `ingest_local.py` builds `index.json` from `data/machines/*/sops/*.md` via local nomic (same chunker as Moss). *Check: beats pass on the real corpus, wifi-offable.*
-5. ☐ **Unify Moss through `core.answer`** — `RETRIEVER=stub|moss` switch so both paths run the same loop. *Check: Moss beats pass via core.*
+4. ✅ **Real-corpus stub** — `ingest_local.py` builds `index.json` from `data/machines/*/sops/*.md` via local nomic (same chunker as Moss). *Check: beats pass on the real corpus, wifi-offable.*
+5. ✅ **Unify Moss through `core.answer`** — `RETRIEVER=stub|moss` switch so both paths run the same loop. *Check: Moss beats pass via core.*
 6. ☐ **Phase 2 screen** — `server.py` (stdlib http.server + SSE) + `screen.html` rendering `screen_state` (transcript · answer · steps · citation · ⚠ safety · escalation). *Check: server serves the page and streams a screen_state; typed-input box (the R2 fallback, gap G3).*
 7. ☐ **Scaffold Phase 3** — `agent.py` (LiveKit: push-to-talk → STT → `core.answer` → TTS + data-channel push). Code + run-notes; not hardware-tested.
 8. ☐ **Scaffold Phase 4** — `unsiloed_ingest.py` (PDF → Unsiloed Parse/Extract → chunk → Moss). Code + schema mapping; not run (needs API key).
@@ -34,4 +34,9 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 - 🔒 **Harden**: corpus to ~5–10 SOPs, re-tune, 5× dry-run, freeze (Phase 5)
 
 ## Progress log
-- (commits will appear here / in `git log` as steps land)
+- `66bdb7b` baseline: M1 stub + Moss integration + planning docs
+- Phase 1.5 refactor (items 2/4/5): `core.answer → screen_state` over the Retriever seam
+  (`CosineRetriever` stub gate 0.70 + `MossRetriever` gate None), `render.py`, thin `ask.py`,
+  shared `corpus.py` chunker, `ingest_local.py`. Verified: 4 stub beats (ANSWERED/ESCALATED/
+  ESCALATED/ANSWERED) + Moss path answers & cites SOP-1187. On the real 21-chunk corpus the
+  stub gate now catches BOTH bypass (0.645) and servo (0.680) deterministically.
