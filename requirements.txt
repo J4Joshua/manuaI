@@ -1,0 +1,41 @@
+# ManuAI — Python dependencies (target: macOS / Apple Silicon, Python 3.10–3.13)
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Grouped by the .claude/skills/ component each belongs to.
+# Active lines = the recommended MLX-first offline path. Commented lines = alternatives.
+
+# ── Retrieval — skill: moss ─────────────────────────────────────────────────────
+# Pinned to the exact beta verified working against the live project (API can shift
+# between betas). Import name is `inferedge_moss`, NOT `moss`.
+inferedge-moss==1.0.0b19
+
+# ── Ingestion — skill: unsiloed ─────────────────────────────────────────────────
+# No official SDK; the Unsiloed Parse API is plain HTTP.
+requests>=2.31
+
+# ── Voice orchestration — skill: livekit-agents ─────────────────────────────────
+# Pinned to the 1.5.x stable line (avoids the 1.6 release-candidate API churn).
+livekit-agents~=1.5.17
+livekit-plugins-silero          # local VAD (in-process ONNX, offline)
+livekit-plugins-openai          # reach local OpenAI-compatible Ollama/Whisper/TTS servers
+# livekit-plugins-turn-detector # only if you use auto turn detection instead of push-to-talk
+
+# ── Local LLM — skills: qwen, mlx (recommended) / ollama (alt) ───────────────────
+mlx-lm>=0.31                     # Qwen2.5-Instruct on Apple Silicon, streaming generate
+# ollama>=0.3                    # alt: Python client for a local `ollama serve`
+
+# ── Local STT — skill: whisper-stt ──────────────────────────────────────────────
+mlx-whisper>=0.4                 # recommended on Apple Silicon (uses the GPU)
+# faster-whisper>=1.0            # portable fallback (CPU-only on macOS, no Metal)
+
+# ── Local TTS — skill: local-tts ────────────────────────────────────────────────
+kokoro-onnx>=0.4                 # recommended: quality + fast, avoids espeak-ng setup
+# piper-tts>=1.2                 # ultra-fast fallback
+
+# ── Local embeddings — only if MOSS_MODEL_ID=custom (skills: mlx, ollama) ────────
+# If you let Moss embed (moss-minilm, the default), you don't need these.
+# mlx-embeddings>=0.0.3          # MLX embedding models (supply your own vectors to Moss)
+
+# ── Shared utilities ────────────────────────────────────────────────────────────
+python-dotenv>=1.0              # load .env
+numpy>=1.26
+soundfile>=0.12                 # read/write/play audio for STT + TTS

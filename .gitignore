@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Models / large local artifacts (pulled at setup, not committed)
+models/
+*.gguf
+*.safetensors
+*.onnx
+*.bin
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs / scratch
+*.log
+.audit/
