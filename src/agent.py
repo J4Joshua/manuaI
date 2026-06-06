@@ -30,11 +30,11 @@ HOW TO RUN
         #   (mlx-community/whisper-small-mlx) into the HF cache.
 
 2.  Prove the local stack with NO mic / NO LiveKit (do this first):
-        .venv/bin/python voice_smoke.py
+        .venv/bin/python src/voice_smoke.py
         # jam -> answered + SOP-1187 ; bypass -> escalated
 
 3.  Verify the agent builds (STT/TTS/VAD/session construct, no mic):
-        .venv/bin/python agent.py check
+        .venv/bin/python src/agent.py check
 
 4.  Start the self-hosted LiveKit server (no cloud, no internet):
         livekit-server --dev
@@ -44,8 +44,8 @@ HOW TO RUN
         ollama serve            # then: ollama run qwen2.5:3b   (to pull once)
 
 6.  Start the agent worker (registers with the local LiveKit server):
-        .venv/bin/python agent.py dev
-        # or:  .venv/bin/python agent.py start   (production worker mode)
+        .venv/bin/python src/agent.py dev
+        # or:  .venv/bin/python src/agent.py start   (production worker mode)
 
 7.  Connect the Phase 2 frontend (screen.html) into LiveKit room "manuai" and
     hold the push-to-talk button to speak. A frontend token, generated offline:
@@ -137,8 +137,9 @@ logger = logging.getLogger("manuai.agent")
 # ---------------------------------------------------------------------------
 # Config from environment
 # ---------------------------------------------------------------------------
-HERE = Path(__file__).resolve().parent
-MODELS = HERE / "models"
+import paths  # noqa: E402  (repo-root asset anchors)
+
+MODELS = paths.MODELS
 
 LIVEKIT_URL = os.environ["LIVEKIT_URL"]  # defaulted above
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "devkey")

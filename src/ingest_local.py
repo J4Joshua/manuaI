@@ -5,15 +5,13 @@ Uses the shared corpus chunker (corpus.build_chunks) so the stub and the Moss in
 hold IDENTICAL content + ids + metadata. Embeds each chunk's `text` LOCALLY with
 nomic-embed-text (D6) and stores the 768-d vector alongside the metadata.
 
-    .venv/bin/python ingest_local.py
+    .venv/bin/python src/ingest_local.py
 """
 import json
-from pathlib import Path
 
 import common
 import corpus
-
-HERE = Path(__file__).resolve().parent
+import paths
 
 
 def main():
@@ -21,7 +19,7 @@ def main():
     for c in chunks:
         c["vector"] = common.embed(c["text"], "document")
 
-    out = HERE / "index.json"
+    out = paths.INDEX_JSON
     with open(out, "w") as f:
         json.dump(chunks, f)
 

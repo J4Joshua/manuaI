@@ -13,8 +13,8 @@ Single process:
 Zero LiveKit / WebRTC / network. Only touches: mic, speaker, local Ollama, localhost HTTP.
 
 Run:
-    .venv/bin/python offline_demo.py              # live voice loop
-    .venv/bin/python offline_demo.py --selftest   # headless acceptance test
+    .venv/bin/python src/offline_demo.py              # live voice loop
+    .venv/bin/python src/offline_demo.py --selftest   # headless acceptance test
 """
 from __future__ import annotations
 
@@ -36,9 +36,10 @@ import soundfile as sf
 # ---------------------------------------------------------------------------
 # Paths + env
 # ---------------------------------------------------------------------------
-HERE = Path(__file__).resolve().parent
-MODELS = HERE / "models"
-SCREEN_HTML = HERE / "screen.html"
+import paths
+
+MODELS = paths.MODELS
+SCREEN_HTML = paths.WEB / "screen.html"
 
 # Load .env the same way voice_smoke.py does (retriever's stdlib loader).
 from retriever import CosineRetriever, load_env

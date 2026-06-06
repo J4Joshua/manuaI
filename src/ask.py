@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Thin CLI shim over core.answer + render (ARCHITECTURE.md §6).
 
-    .venv/bin/python ask.py "the labeler on line 3 jammed and shows error E-42"
-    .venv/bin/python ask.py --machine cobot-cellA "robot in cell A shows fault C4"
-    .venv/bin/python ask.py --retriever moss "..."   # sponsor-tech path (needs wifi to load)
+    .venv/bin/python src/ask.py "the labeler on line 3 jammed and shows error E-42"
+    .venv/bin/python src/ask.py --machine cobot-cellA "robot in cell A shows fault C4"
+    .venv/bin/python src/ask.py --retriever moss "..."   # sponsor-tech path (needs wifi to load)
 
 stub  (default) → CosineRetriever over index.json  — bulletproof-offline.
 moss            → MossClient + MossRetriever        — load_index is the one network step.

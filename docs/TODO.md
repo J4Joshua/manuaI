@@ -26,11 +26,11 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 
 ## 🔒 Needs you (when you wake)
 - 🔒 **Moss office-hours** (4pm): offline cold-load/persist in Python + token-expiry — protects the wifi-off demo (`ARCHITECTURE.md §12e`)
-- 🔒 **Voice — LIVE MIC TEST only** (pipeline built + verified mic-free): deps + `livekit-server` 1.12 installed; `voice_smoke.py` PASS (TTS→STT→core→TTS); `agent.py` worker registers. **You do:** `livekit-server --dev` + `.venv/bin/python agent.py dev` + connect `screen.html` / a token to room `manuai` → hold push-to-talk, speak, release; then **redo with wifi OFF** (closes G1). First press garbled → tune `commit_user_turn` flush / VAD silence (see `agent.py`).
+- 🔒 **Voice — LIVE MIC TEST only** (pipeline built + verified mic-free): deps + `livekit-server` 1.12 installed; `voice_smoke.py` PASS (TTS→STT→core→TTS); `agent.py` worker registers. **You do:** `livekit-server --dev` + `.venv/bin/python src/agent.py dev` + connect `screen.html` / a token to room `manuai` → hold push-to-talk, speak, release; then **redo with wifi OFF** (closes G1). First press garbled → tune `commit_user_turn` flush / VAD silence (see `agent.py`).
 - 🔒 **Pre-pull + verify offline**: Whisper-small-mlx + Kokoro + Silero weights are DOWNLOADED (in `models/` + HF cache); still set `HF_HUB_OFFLINE=1` on the demo box and confirm a wifi-off `voice_smoke.py` run (gap G6)
 - 🔒 **Unsiloed API key** in `.env` → run Phase 4 ingest on the real PDFs
 - 🔒 **Rehearse the Moss wifi-off sequence** with `scripts/moss_offline_test.py` on the demo box (load online → keep process alive → wifi off)
-- 🔒 **Record the wifi-off video** — run `.venv/bin/python offline_demo.py` with wifi physically OFF (it's WebRTC-free → guaranteed offline), open the screen, press Enter + speak. Screen-record it: this IS the headline moment + the safety-net clip. (LiveKit `operator.html` is wifi-ON only — WebRTC can't go offline.)
+- 🔒 **Record the wifi-off video** — run `.venv/bin/python src/offline_demo.py` with wifi physically OFF (it's WebRTC-free → guaranteed offline), open the screen, press Enter + speak. Screen-record it: this IS the headline moment + the safety-net clip. (LiveKit `operator.html` is wifi-ON only — WebRTC can't go offline.)
 - 🔒 **Harden**: corpus to ~5–10 SOPs, re-tune, 5× dry-run, freeze (Phase 5)
 
 ## Progress log

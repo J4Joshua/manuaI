@@ -14,7 +14,8 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent
+import paths
+
 FM_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.S)
 
 
@@ -41,9 +42,9 @@ def _sections(body):
                 yield "Overview", p
 
 
-def build_chunks(pattern="data/machines/*/sops/*.md"):
+def build_chunks(pattern="machines/*/sops/*.md"):
     chunks = []
-    for path in sorted(glob.glob(str(ROOT / pattern))):
+    for path in sorted(glob.glob(str(paths.DATA / pattern))):
         fm, body = _parse(path)
         if not fm:
             continue

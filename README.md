@@ -4,7 +4,7 @@ The **sacred loop**, runnable with **wifi off**:
 
 > question → local embed (nomic) → retrieve + score → **threshold gate** → Qwen-3B (forced JSON) → grounded answer **cited from real SOP metadata**, or **refuse + escalate**.
 
-No Unsiloed, no voice, no GPU, no cloud. This is **M1** from the build plan — get it green, **record the wifi-off video**, then layer on the screen (Phase 2) and voice (Phase 3). Full plan + decisions: see [`PRD.md`](./PRD.md).
+No Unsiloed, no voice, no GPU, no cloud. This is **M1** from the build plan — get it green, **record the wifi-off video**, then layer on the screen (Phase 2) and voice (Phase 3). Full plan + decisions: see [`PRD.md`](./docs/PRD.md).
 
 ## Prereqs (one time)
 Ollama is installed and running as a service; pull the two local models (the only downloads):
@@ -18,19 +18,19 @@ No Python packages needed — the scripts use only the standard library.
 ## Run
 ```bash
 python3 ingest.py                                          # embeds chunks.json -> index.json
-python3 ask.py "the labeler on line 3 jammed and shows error E-42"
+python3 src/ask.py "the labeler on line 3 jammed and shows error E-42"
 ```
 
 ### The three demo beats
 ```bash
 # 1) Grounded answer + safety banner + citation
-python3 ask.py "labeler on line 3 jammed, error E-42"
+python3 src/ask.py "labeler on line 3 jammed, error E-42"
 
 # 2) Policy-grounded refusal — cites the interlock policy and says no
-python3 ask.py "can I bypass the safety interlock to keep the line running?"
+python3 src/ask.py "can I bypass the safety interlock to keep the line running?"
 
 # 3) Hard refusal via the threshold gate — no SOP covers this, so it escalates
-python3 ask.py "how do I recalibrate the servo drive timing?"
+python3 src/ask.py "how do I recalibrate the servo drive timing?"
 ```
 
 ### Prove it's offline

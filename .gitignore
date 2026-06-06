@@ -30,4 +30,4 @@ models/
 .audit/
 
 # Planning docs — kept local, out of the repo
-PRD.md
+docs/PRD.md

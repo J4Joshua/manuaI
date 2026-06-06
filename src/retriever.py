@@ -27,11 +27,11 @@ from inferedge_moss import QueryOptions
 
 from common import cosine, embed
 
-HERE = Path(__file__).resolve().parent
+import paths
 
 
-def load_env(path=".env"):
-    p = HERE / path
+def load_env(path=None):
+    p = Path(path) if path else paths.ENV_FILE
     if not p.exists():
         return
     for line in p.read_text().splitlines():
@@ -58,9 +58,9 @@ class CosineRetriever:
     threshold = 0.70
 
     def __init__(self, index_path=None):
-        path = Path(index_path) if index_path else HERE / "index.json"
+        path = Path(index_path) if index_path else paths.INDEX_JSON
         if not path.exists():
-            raise SystemExit(f"No {path.name} — run `.venv/bin/python ingest_local.py` first.")
+            raise SystemExit(f"No {path.name} — run `.venv/bin/python src/ingest_local.py` first.")
         with open(path) as f:
             self.index = json.load(f)
 

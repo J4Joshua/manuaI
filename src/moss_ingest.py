@@ -3,7 +3,7 @@
 so the stub (index.json) and Moss hold IDENTICAL content + ids + metadata.
 
 Online — create_index builds in the cloud (ARCHITECTURE.md §12a). Run with wifi ON:
-    .venv/bin/python moss_ingest.py
+    .venv/bin/python src/moss_ingest.py
 
 Lets Moss embed (raw text in, model moss-minilm) per §12b. All metadata VALUES must be
 strings (Moss requirement) — safety_flag is "true"/"false", page is omitted (None).

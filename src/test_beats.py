@@ -2,7 +2,7 @@
 """Regression gate — the canonical demo beats on the STUB (offline, deterministic gate).
 Run after ANY corpus / threshold / prompt change (ARCHITECTURE.md G8). Exit 0 = all pass.
 
-    .venv/bin/python test_beats.py
+    .venv/bin/python src/test_beats.py
 
 Uses CosineRetriever (no network). The two refusals fire at the deterministic gate;
 the two answers go through Qwen (temp 0) and must cite the expected SOP.

@@ -7,7 +7,7 @@ Phase 3 voice pipeline in isolation so a failure is unambiguous:
     Kokoro TTS  → wav  → mlx-whisper STT → transcript → core.answer (brain) → wav
 
 Run:
-    .venv/bin/python voice_smoke.py
+    .venv/bin/python src/voice_smoke.py
 
 First run downloads the Whisper weights (mlx-community/whisper-small) into the HF
 cache. The Kokoro ONNX weights must already live in models/ (see README / agent.py):
@@ -44,9 +44,9 @@ if not (os.environ.get("HF_TOKEN") or "").strip():
     os.environ.pop("HF_TOKEN", None)
 
 import core  # core.answer(question, machine_id, retriever) -> screen_state
+import paths
 
-HERE = Path(__file__).resolve().parent
-MODELS = HERE / "models"
+MODELS = paths.MODELS
 
 
 def _resolve_whisper_repo(name: str) -> str:

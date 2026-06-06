@@ -11,7 +11,7 @@ Run with wifi ON after `moss_ingest.py` has run at least once
 (so the index exists and can be rebuilt here with the union corpus).
 
 Usage:
-    .venv/bin/python unsiloed_ingest.py [--dry-run] [--pdf path/to/manual.pdf]
+    .venv/bin/python src/unsiloed_ingest.py [--dry-run] [--pdf path/to/manual.pdf]
 
     --dry-run   Normalise chunks and print stats; skip Moss create_index (no Moss creds needed).
     --pdf       Process a single PDF instead of all manuals (useful for smoke-testing one doc).
@@ -73,11 +73,10 @@ from pathlib import Path
 # inferedge_moss is imported inside the async Moss block so --dry-run works
 # without Moss creds being present.
 import corpus
+import paths
 from retriever import load_env, make_client
 
 # ── Constants ────────────────────────────────────────────────────────────────
-
-HERE = Path(__file__).resolve().parent
 
 # Safety keywords that force safety_flag=True regardless of Extract confidence.
 _SAFETY_RE = re.compile(
@@ -130,7 +129,7 @@ def _base_url():
 
 def _load_manifest():
     """Return the parsed manifest.json dict."""
-    p = HERE / "data" / "manifest.json"
+    p = paths.DATA / "manifest.json"
     with open(p) as f:
         return json.load(f)
 
@@ -142,7 +141,7 @@ def _build_path_index(manifest):
 
 def _find_pdfs():
     """Glob all OEM manuals under data/machines/*/manuals/*.pdf."""
-    return sorted((HERE / "data").glob("machines/*/manuals/*.pdf"))
+    return sorted(paths.DATA.glob("machines/*/manuals/*.pdf"))
 
 
 def _manifest_doc_for_pdf(pdf_path, path_index):
@@ -153,7 +152,7 @@ def _manifest_doc_for_pdf(pdf_path, path_index):
     Handles --pdf paths outside data/ gracefully (ValueError → None → skip).
     """
     try:
-        rel = str(pdf_path.relative_to(HERE / "data"))
+        rel = str(pdf_path.relative_to(paths.DATA))
     except ValueError:
         # Path is outside data/ — cannot be in the manifest.
         return None

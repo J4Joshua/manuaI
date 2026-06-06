@@ -35,6 +35,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import core
+import paths
 from retriever import CosineRetriever, load_env
 
 # Load .env so LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are available to
@@ -45,10 +46,9 @@ try:
 except Exception:
     pass
 
-HERE = Path(__file__).resolve().parent
-SCREEN_HTML = HERE / "screen.html"
-OPERATOR_HTML = HERE / "operator.html"
-STATIC_DIR = HERE / "static"
+SCREEN_HTML = paths.WEB / "screen.html"
+OPERATOR_HTML = paths.WEB / "operator.html"
+STATIC_DIR = paths.WEB / "static"
 
 # LiveKit config — local self-hosted defaults (G1: never a cloud URL).
 LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "ws://127.0.0.1:7880")
