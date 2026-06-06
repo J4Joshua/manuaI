@@ -116,7 +116,10 @@ def synth_to_wav(text: str, wav_path: str, voice: str = TTS_VOICE) -> str:
 def transcribe_wav(wav_path: str) -> str:
     import mlx_whisper
 
-    result = mlx_whisper.transcribe(wav_path, path_or_hf_repo=WHISPER_MODEL)
+    result = mlx_whisper.transcribe(
+        wav_path, path_or_hf_repo=WHISPER_MODEL,
+        language="en", condition_on_previous_text=False,
+    )
     return (result.get("text") or "").strip()
 
 

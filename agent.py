@@ -215,7 +215,12 @@ class MlxWhisperSTT(stt_mod.STT):
     def _transcribe_sync(self, wav_path: str) -> str:
         import mlx_whisper
 
-        result = mlx_whisper.transcribe(wav_path, path_or_hf_repo=self._model_repo)
+        result = mlx_whisper.transcribe(
+            wav_path,
+            path_or_hf_repo=self._model_repo,
+            language=self._language,           # pin English — else Whisper mis-detects (Chinese)
+            condition_on_previous_text=False,  # stop the repeated-token hallucination loop
+        )
         return (result.get("text") or "").strip()
 
     async def _recognize_impl(
