@@ -30,6 +30,7 @@
   var convoEl = document.getElementById("convo");
   var emptyConvo = document.getElementById("empty-convo");
   var demoBtn = document.getElementById("demo-btn");
+  var resetBtn = document.getElementById("reset-btn");
   var contextGraphPanel = document.getElementById("context-graph-panel");
   var contextGraphCanvas = document.getElementById("context-graph-canvas");
   var contextGraphStatus = document.getElementById("context-graph-status");
@@ -84,6 +85,7 @@
   var graphCompactAnimFrame = null;
   var lastContextTurnSeq = null;
   var lastContextQuestion = "";
+  var pollLastSig = null;   // /state dedup key (poll mode); cleared by fullReset()
 
   var DEMO_QUESTION = "The break release failed and threw error. C57.";
   var DEMO_POOL_BATCHES = [
@@ -866,6 +868,25 @@
       if (!forceGraph.rafId) renderForceGraph();
     }
   }
+
+  // Full session reset (the top-bar "Reset" button): clears the transcript, the context
+  // pool graph, and the screen state — both client display AND the bridge's server state
+  // (LATEST + turn counter + swarm bubble), so the next /state poll can't repopulate the
+  // cleared turn. Works in poll mode (live bridge) and demo mode alike.
+  function fullReset() {
+    fetch("/reset").catch(function () {});   // server half (best-effort; no-op off the bridge)
+    transcript.length = 0;
+    pendingAgentId = null;
+    render();
+    lastContextTurnSeq = null;
+    lastContextQuestion = "";
+    lastScreenState = IDLE_STATE;
+    pollLastSig = null;
+    beginNewContextPoolTurn();
+    setStatus("idle");
+    log("Session reset — transcript + context pool cleared.");
+  }
+  if (resetBtn) resetBtn.addEventListener("click", fullReset);
 
   function shouldResetContextPoolForTurn(s) {
     if (!s) return false;
@@ -3151,7 +3172,6 @@
     renderContextPoolGraph(IDLE_STATE);
     log("Poll mode — screen driven by glasses_bridge /state (no LiveKit, no browser mic).");
 
-    var lastSig = null;
     function pollTick() {
       fetch("/state")
         .then(function (r) { return r.json(); })
@@ -3161,8 +3181,8 @@
           var status = s.status || "idle";
           if (status === "idle") return;
           var sig = [s.turn_seq, s.question, status, s.answer, s.top_score].join("|");
-          if (sig === lastSig) return;
-          lastSig = sig;
+          if (sig === pollLastSig) return;
+          pollLastSig = sig;
           applyScreenState(s);
         })
         .catch(function () { /* bridge restarting — keep polling */ });
