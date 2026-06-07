@@ -10,7 +10,6 @@ Assumes setup is done (run `/first-setup` if not). `CLAUDE.md` has the mental mo
 ## Health check (start of session)
 ```bash
 curl -s localhost:11434/api/tags        # Ollama up, qwen2.5:3b present
-.venv/bin/python src/test_beats.py      # -> ALL BEATS PASS   (if red, fix BEFORE changing anything)
 ```
 
 ## Start the app (dev)
@@ -40,7 +39,6 @@ The phone must share the Mac's Wi-Fi/hotspot; re-run the script whenever the IP 
 2. Run the gate that matches the change, then **commit per verified step** (working branch `build/demo-mvp`):
    | change | gate |
    |---|---|
-   | logic / corpus / prompt / threshold | `.venv/bin/python src/test_beats.py` → `ALL BEATS PASS` |
    | voice pipeline (STT/TTS/core) | `src/offline_demo.py --selftest` · `src/voice_smoke.py` |
    | glasses bridge / operator UI | `src/glasses_bridge.py --selftest-wire` (zero models) · `--selftest` (full) |
    | LiveKit agent | `src/agent.py check` |
@@ -48,8 +46,8 @@ The phone must share the Mac's Wi-Fi/hotspot; re-run the script whenever the IP 
 3. Commit messages end with the `Co-Authored-By` trailer. Commit only verified steps; don't push to `main` without explicit OK.
 
 ## Recipes (common tasks)
-- **Add / edit an SOP:** drop a `.md` (with the SOP frontmatter — see `data/machines/*/sops/*.md`) under `data/machines/<id>/sops/`, then `.venv/bin/python src/moss_ingest.py` (rebuilds `data/moss_index.json`). Re-run `test_beats.py`. **Never** add a doc covering a `data/manifest.json → intentional_gaps` query (it kills the refusal beat).
-- **Change answer / refuse behavior:** edit `SYSTEM` in `src/core.py`. The off-domain refusal depends on the **task-match few-shot** there — keep it. Re-run `test_beats.py`.
+- **Add / edit an SOP:** drop a `.md` (with the SOP frontmatter — see `data/machines/*/sops/*.md`) under `data/machines/<id>/sops/`, then `.venv/bin/python src/moss_ingest.py` (rebuilds `data/moss_index.json`). **Never** add a doc covering a `data/manifest.json → intentional_gaps` query (it kills the refusal behavior).
+- **Change answer / refuse behavior:** edit `SYSTEM` in `src/core.py`. The off-domain refusal depends on the **task-match few-shot** there — keep it.
 - **Tweak the screen:** edit `web/screen.html`'s `applyState()` — it's reused VERBATIM by `operator.html` over the LiveKit data channel, so one edit updates **both** modes. Keep logic out of the UI; it only renders `screen_state`.
 - **Add a retriever:** implement the seam in `src/retriever.py` — `async search(question, machine_id, k) -> [record]` + class attr `threshold`. Moss offline path uses `threshold=None` (refusal via the LLM few-shot).
 - **Offline guarantees:** `WHISPER_MODEL` needs the `-mlx` suffix; keep `HF_TOKEN` blank; export `HF_HUB_OFFLINE=1` for a guaranteed-offline run once models are cached.

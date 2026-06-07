@@ -161,8 +161,8 @@ the VAD (HFP mic not routing, or `ENERGY_THRESHOLD` too high for Bluetooth level
    and threw error E-42.", ...)` to make the fixture. Expect `GET
    http://localhost:8000/state` to flip to `status:"answered"` citing **SOP-1187** and
    the **laptop to speak**.
-2. **Brain unchanged:** `.venv/bin/python src/offline_demo.py --selftest` and
-   `src/test_beats.py` still pass — you only *import* from offline_demo, never modify it.
+2. **Brain unchanged:** `.venv/bin/python src/offline_demo.py --selftest` still passes —
+   you only *import* from offline_demo, never modify it.
 3. **Optional headless gate** in the bridge (`--selftest`) that runs the two canonical
    beats (jam→answered+SOP-1187, bypass→escalated) through the WS segmentation path,
    mirroring `offline_demo.selftest`.

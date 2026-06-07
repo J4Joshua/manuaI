@@ -91,11 +91,6 @@ livekit-server --config livekit.offline.yaml
 .venv/bin/python src/server.py              # open http://localhost:8000/operator.html
 ```
 
-**Sanity check** (offline, no mic):
-```bash
-.venv/bin/python src/test_beats.py          # the 4 canonical beats: jam→answer+cite, bypass→escalate, …
-```
-
 ## Layout
 
 ```
