@@ -177,7 +177,7 @@ pops a blank `HF_TOKEN` (line 51) so anonymous model pulls work — inherit that
 
 ## 6. Canonical test beats (ground truth)
 
-From `offline_demo.selftest` / `test_beats.py`:
+From `offline_demo.selftest`:
 - **Jam** → answered, cites **SOP-1187**:
   `"The labeler on line 3 jammed and threw error E-42."`
 - **Bypass** → escalated:

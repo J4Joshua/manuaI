@@ -92,7 +92,6 @@ manuai/
 ├── retriever.py       Retriever seam: CosineRetriever (stub) | MossRetriever       [Phase 1.5 + 0]
 ├── render.py          terminal render(screen_state)                                [Phase 1.5]
 ├── ask.py             thin CLI shim over core.answer + render
-├── test_beats.py      regression: the 4 canonical beats pass/refuse                [Phase 1.5/5]
 ├── moss_hello.py      Phase 0 proof script (3 vectors in, query, wifi off)         [Phase 0]
 ├── server.py          local http.server: serves screen.html + SSE feed            [Phase 2]
 ├── screen.html        5-panel UI; single entry point applyState(screen_state)      [Phase 2/3]

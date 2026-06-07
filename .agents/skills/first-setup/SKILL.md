@@ -48,7 +48,6 @@ Whisper auto-downloads on first STT run. Kokoro needs `models/kokoro-v1.0.onnx` 
 
 ## 7. VERIFY — all must pass before declaring setup done
 ```bash
-.venv/bin/python src/test_beats.py            # -> ALL BEATS PASS   (offline, no mic)
 .venv/bin/python src/offline_demo.py --selftest   # -> SELFTEST: PASS (downloads voice models first run)
 .venv/bin/python src/agent.py check           # -> PASS  (LiveKit wiring)
 ```
