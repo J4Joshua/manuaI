@@ -35,6 +35,12 @@ kokoro-onnx>=0.4                 # recommended: quality + fast, avoids espeak-ng
 
 # ── Local embeddings — not used (Moss embeds via moss_core.PyEmbeddingService) ─
 
+# ── Glasses bridge — skill: glasses-bridge ──────────────────────────────────────
+# Offline Meta Ray-Ban glasses → ManuAI audio bridge (src/glasses_bridge.py): a raw
+# WebSocket front-end wrapping the offline_demo pipeline. Both imported directly there.
+websockets>=15.0                # raw-WS server for the glasses audio socket (modern asyncio API; 15.x/16.x)
+scipy>=1.10                     # signal.resample_poly for the glasses 48k→16k downsample
+
 # ── Shared utilities ────────────────────────────────────────────────────────────
 python-dotenv>=1.0              # load .env
 numpy>=1.26
