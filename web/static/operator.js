@@ -30,7 +30,6 @@
   var hdrStatus = document.getElementById("hdr-status");
   var pttBtn = document.getElementById("ptt-btn");
   var pttCap = document.getElementById("ptt-cap");
-  var pttMachine = document.getElementById("ptt-machine");
   var convoEl = document.getElementById("convo");
   var emptyConvo = document.getElementById("empty-convo");
   var logEl = document.getElementById("op-log");
@@ -122,10 +121,43 @@
     if (connText) connText.textContent = text;
   }
 
-  function setMachine(id) {
-    var label = id || "—";
-    if (hdrMachine) hdrMachine.textContent = label;
-    if (pttMachine) pttMachine.textContent = label;
+  function formatCorpusLabel(state) {
+    if (!state) return "Full corpus indexed";
+    var bubble = state.context_bubble || {};
+    var bubbleStatus = bubble.status || "idle";
+    if (bubbleStatus === "gathering" || bubbleStatus === "refreshing") {
+      return "Retrieval active";
+    }
+    if (state.status === "answered" && state.citations && state.citations.length) {
+      var ids = [];
+      var seen = {};
+      state.citations.forEach(function (c) {
+        if (c.sop_id && !seen[c.sop_id]) {
+          seen[c.sop_id] = true;
+          ids.push(c.sop_id);
+        }
+      });
+      if (ids.length) {
+        var shown = ids.slice(0, 2).join(" · ");
+        if (ids.length > 2) shown += " +" + (ids.length - 2);
+        return "Grounded: " + shown;
+      }
+    }
+    if (bubble.chunk_count > 0 && bubbleStatus === "ready") {
+      return bubble.chunk_count + " related chunks";
+    }
+    if (state.status === "escalated") {
+      return "No approved match";
+    }
+    return "Full corpus indexed";
+  }
+
+  function setCorpusBadge(state) {
+    var label = formatCorpusLabel(state);
+    if (hdrMachine) {
+      hdrMachine.textContent = label;
+      hdrMachine.title = "Searching all indexed SOPs and manuals (no machine filter)";
+    }
   }
 
   // ── Camera panel ────────────────────────────────────────────────────────
@@ -763,12 +795,15 @@
       panelContext.classList.remove("gathering");
       if (contextRefresh) contextRefresh.disabled = false;
     }
+    if (s && (s.status || s.context_bubble)) {
+      setCorpusBadge(s);
+    }
   }
 
   function applyScreenState(state) {
     lastScreenState = state;
     updateContextBubble(state);
-    setMachine(state.machine_id);
+    setCorpusBadge(state);
     var status = state.status || "idle";
     if (status === "idle") return;
 
@@ -1011,18 +1046,16 @@
     var askInput = document.getElementById("ask-input");
     var askBtn = document.getElementById("btn-ask");
     var spinnerEl = document.getElementById("spinner");
-    var machineSelect = document.getElementById("machine-select");
     if (!askInput || !askBtn) return;
 
     function doAsk() {
       var q = askInput.value.trim();
       if (!q) return;
-      var machine = (machineSelect && machineSelect.value) || "cobot-cellA";
       askBtn.disabled = true;
       if (spinnerEl) spinnerEl.style.display = "block";
       pendingOperatorId = null;
       pendingAgentId = null;
-      var url = "/ask?q=" + encodeURIComponent(q) + "&machine=" + encodeURIComponent(machine);
+      var url = "/ask?q=" + encodeURIComponent(q);
       fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
@@ -1119,9 +1152,7 @@
     if (demoBtn) demoBtn.hidden = false;
     log("Demo mode — scripted Cell A C57 brake-release scenario");
     log("Hold to talk, click Play demo, or wait for auto-play. ?live=1 for LiveKit.");
-    setMachine("cobot-cellA");
-    var machineSelect = document.getElementById("machine-select");
-    if (machineSelect) machineSelect.value = "cobot-cellA";
+    setCorpusBadge(IDLE_STATE);
     setConn("ready", "Demo mode");
     setStatus("idle");
     enableButton(true);
@@ -1213,18 +1244,14 @@
 
   function wireContextRefresh() {
     var refreshBtn = document.getElementById("context-refresh-btn");
-    var machineSelect = document.getElementById("machine-select");
     var askInput = document.getElementById("ask-input");
     if (!refreshBtn) return;
 
     function refreshViaHttp() {
       var state = lastScreenState || IDLE_STATE;
-      var machine = state.machine_id ||
-        (machineSelect && machineSelect.value) ||
-        "cobot-cellA";
       var q = state.question || (askInput && askInput.value.trim()) || "";
-      var url = "/context/refresh?machine=" + encodeURIComponent(machine);
-      if (q) url += "&q=" + encodeURIComponent(q);
+      var url = "/context/refresh";
+      if (q) url += "?q=" + encodeURIComponent(q);
       return fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (data) {
@@ -1274,7 +1301,7 @@
      document.getElementById("context-refresh-btn")].forEach(function (el) {
       if (el) el.hidden = true;
     });
-    setMachine("—");
+    setCorpusBadge(IDLE_STATE);
     setConn("ready", "Listening — glasses");
     setStatus("idle");
     if (pttCap) pttCap.textContent = "Speak into the glasses";
@@ -1309,6 +1336,7 @@
     wireDemoButton();
     lastScreenState = IDLE_STATE;
     updateContextBubble(IDLE_STATE);
+    setCorpusBadge(IDLE_STATE);
 
     if (pollMode) {
       initPoll();

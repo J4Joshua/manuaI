@@ -8,7 +8,7 @@ Routes:
     GET /context/refresh?machine=...&q=...
                        → force one Moss context-swarm pass → JSON screen_state
     GET /ask?q=...&machine=...
-                       → core.answer(q, machine, MossRetriever) → set LATEST → JSON
+                       → core.answer(q, MossRetriever) → set LATEST → JSON
     GET /operator.html → operator.html (Phase 3 unified voice + live screen)   [NEW]
     GET /operator      → alias for /operator.html                              [NEW]
     GET /console(.html)→ alias for /operator.html (same operator console UI)   [NEW]
@@ -301,22 +301,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/state":
             state = dict(LATEST)
-            state["context_bubble"] = live_bubble_snapshot(state.get("machine_id"))
+            state["context_bubble"] = live_bubble_snapshot()
             self._send_json(state)
             return
 
         if path == "/context/refresh":
-            machine = qs.get("machine", [LATEST.get("machine_id") or "labeler-line3"])[0].strip()
-            machine = machine or "labeler-line3"
             question = qs.get("q", [LATEST.get("question") or ""])[0].strip() or None
             try:
-                swarm = get_swarm(machine, RETRIEVER, _on_bubble_update)
+                swarm = get_swarm(RETRIEVER, _on_bubble_update)
                 snap = (
                     get_bg_runner().run(swarm.refresh(question))
                     if swarm else empty_bubble()
                 )
                 state = dict(LATEST)
-                state["machine_id"] = state.get("machine_id") or machine
                 state["context_bubble"] = snap
                 LATEST = state
                 self._send_json(state)
@@ -326,14 +323,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/ask":
             q = qs.get("q", [""])[0].strip()
-            machine = qs.get("machine", ["labeler-line3"])[0].strip() or "labeler-line3"
             if not q:
                 self._send_json({"error": "q parameter required"}, 400)
                 return
             try:
-                swarm = get_swarm(machine, RETRIEVER, _on_bubble_update)
+                swarm = get_swarm(RETRIEVER, _on_bubble_update)
                 state = get_bg_runner().run(
-                    core.answer(q, machine, RETRIEVER, swarm=swarm)
+                    core.answer(q, RETRIEVER, swarm=swarm)
                 )
                 state = with_bubble(state, swarm)
                 LATEST = state
@@ -341,7 +337,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 error_state = {
                     "question": q,
-                    "machine_id": machine,
+                    "machine_id": "",
                     "status": "escalated",
                     "answer": f"Server error: {exc}",
                     "citations": [],

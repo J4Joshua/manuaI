@@ -78,10 +78,9 @@ class AsyncRunner:
 
 
 class ContextSwarm:
-    """Session-scoped Moss prefetch store for one machine_id."""
+    """Session-scoped Moss prefetch store (full corpus — no machine filter)."""
 
-    def __init__(self, machine_id: str, retriever, on_update: Callable[[dict], None] | None = None):
-        self.machine_id = machine_id
+    def __init__(self, retriever, on_update: Callable[[dict], None] | None = None):
         self.retriever = retriever
         self.enabled = swarm_enabled()
         self._on_update = on_update
@@ -186,7 +185,7 @@ class ContextSwarm:
 
         before = len(self._chunks)
         if question and len(self._chunks) < MAX_CHUNKS:
-            hits = await self.retriever.search(question, self.machine_id, k=5)
+            hits = await self.retriever.search(question, k=5)
             await self._ingest_hits(hits, "refresh", question)
 
         if len(self._chunks) < MAX_CHUNKS:
@@ -195,7 +194,7 @@ class ContextSwarm:
                 if q in self._prior_queries:
                     continue
                 self._prior_queries.append(q)
-                hits = await self.retriever.search(q, self.machine_id, k=3)
+                hits = await self.retriever.search(q, k=3)
                 await self._ingest_hits(hits, "refresh", q)
 
         async with self._lock:
@@ -217,7 +216,6 @@ class ContextSwarm:
             return []
         prior = "\n".join(f"- {q}" for q in self._prior_queries) or "(none)"
         user = (
-            f"Machine: {self.machine_id}\n\n"
             f"Accumulated context:\n{self._format_context_doc()}\n\n"
             f"Prior queries:\n{prior}"
         )
@@ -241,7 +239,7 @@ class ContextSwarm:
                     break
                 for q in queries:
                     self._prior_queries.append(q)
-                    hits = await self.retriever.search(q, self.machine_id, k=3)
+                    hits = await self.retriever.search(q, k=3)
                     await self._ingest_hits(hits, "swarm", q)
                 await asyncio.sleep(ROUND_PAUSE_SECS)
             self._status = "ready"
@@ -252,7 +250,7 @@ class ContextSwarm:
             self._notify()
 
 
-_swarm_by_machine: dict[str, ContextSwarm] = {}
+_swarm: ContextSwarm | None = None
 _bg_runner: AsyncRunner | None = None
 
 
@@ -264,21 +262,21 @@ def get_bg_runner() -> AsyncRunner:
 
 
 def get_swarm(
-    machine_id: str,
     retriever,
     on_update: Callable[[dict], None] | None = None,
 ) -> ContextSwarm | None:
+    global _swarm
     if not swarm_enabled():
         return None
-    if machine_id not in _swarm_by_machine:
-        _swarm_by_machine[machine_id] = ContextSwarm(machine_id, retriever, on_update)
+    if _swarm is None:
+        _swarm = ContextSwarm(retriever, on_update)
     elif on_update:
-        _swarm_by_machine[machine_id].set_on_update(on_update)
-    return _swarm_by_machine[machine_id]
+        _swarm.set_on_update(on_update)
+    return _swarm
 
 
-def live_bubble_snapshot(machine_id: str | None) -> dict:
+def live_bubble_snapshot(_machine_id: str | None = None) -> dict:
     """Latest bubble for /state polls (may be newer than the last answer payload)."""
-    if machine_id and machine_id in _swarm_by_machine:
-        return _swarm_by_machine[machine_id].snapshot()
+    if _swarm is not None:
+        return _swarm.snapshot()
     return empty_bubble()
