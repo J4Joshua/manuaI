@@ -16,8 +16,11 @@
   "use strict";
 
   var params = new URLSearchParams(window.location.search);
-  var liveMode = params.get("live") === "1";
-  var demoMode = !liveMode;
+  // poll mode = offline, driven by glasses_bridge's /state HTTP poll (no LiveKit,
+  // no browser mic; the bridge captures glasses audio and speaks on the laptop).
+  var pollMode = params.get("poll") === "1";
+  var liveMode = !pollMode && params.get("live") === "1";
+  var demoMode = !pollMode && !liveMode;
 
   var LK = window.LivekitClient;
 
@@ -657,6 +660,13 @@
       render();
     }
 
+    if (pollMode) {
+      // The glasses bridge already speaks the answer on the laptop (Kokoro).
+      // No browser audio — reveal the full text + extras (citations/steps/safety).
+      finishAgentReveal(msgId);
+      return;
+    }
+
     if (demoMode) {
       fetch("/tts?text=" + encodeURIComponent(text))
         .then(function (r) {
@@ -1256,6 +1266,42 @@
     });
   }
 
+  function initPoll() {
+    // Offline glasses display: hide the LiveKit/demo/typed controls (none of
+    // their endpoints exist on the bridge) and just poll /state.
+    [demoBtn, pttBtn,
+     document.getElementById("ask-input"),
+     document.getElementById("context-refresh-btn")].forEach(function (el) {
+      if (el) el.hidden = true;
+    });
+    setMachine("—");
+    setConn("ready", "Listening — glasses");
+    setStatus("idle");
+    if (pttCap) pttCap.textContent = "Speak into the glasses";
+    log("Poll mode — screen driven by glasses_bridge /state (no LiveKit, no browser mic).");
+
+    var lastSig = null;
+    function pollTick() {
+      fetch("/state")
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (!s) return;
+          updateContextBubble(s);
+          var status = s.status || "idle";
+          if (status === "idle") return;
+          // turn_seq (stamped by the bridge per utterance) distinguishes a fresh
+          // repeat of the same beat from the same answer still on screen.
+          var sig = [s.turn_seq, s.question, status, s.answer, s.top_score].join("|");
+          if (sig === lastSig) return;
+          lastSig = sig;
+          applyScreenState(s);
+        })
+        .catch(function () { /* bridge restarting — keep polling */ });
+    }
+    setInterval(pollTick, 600);
+    pollTick();
+  }
+
   function boot() {
     wireButton();
     wireTypedInput();
@@ -1263,6 +1309,11 @@
     wireDemoButton();
     lastScreenState = IDLE_STATE;
     updateContextBubble(IDLE_STATE);
+
+    if (pollMode) {
+      initPoll();
+      return;
+    }
 
     if (demoMode) {
       initDemo();
