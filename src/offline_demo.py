@@ -85,7 +85,9 @@ SAMPLE_RATE = 16000       # Whisper expects 16 kHz
 BLOCK_SIZE = 512          # ~32 ms per block at 16 kHz
 ENERGY_THRESHOLD = 0.010  # RMS gate — tune per environment (ambient noise level)
 SPEECH_START_BLOCKS = 3   # blocks above threshold before we declare speech started
-SILENCE_STOP_SECS = 1.2   # trailing silence before we stop recording
+# Trailing silence before we stop recording. 0.8 s (was 1.2) shaves ~0.4 s off perceived
+# latency every turn; env-tunable for venues where operators pause mid-sentence (raise it).
+SILENCE_STOP_SECS = float(os.environ.get("SILENCE_STOP_SECS", "0.8"))
 HARD_CAP_SECS = 15.0      # absolute maximum recording length
 
 # ---------------------------------------------------------------------------
@@ -357,11 +359,59 @@ def run_pipeline(transcript: str, retriever, swarm) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Startup warm-up — kills the turn-1 cold cliff (measured: LLM 7.6 s cold vs ~2 s warm,
+# Kokoro first-synth ONNX graph warm-up, Whisper first-load). Best-effort; never blocks.
+# ---------------------------------------------------------------------------
+def warmup(retriever) -> None:
+    """Pre-load every model so the FIRST real question is warm.
+
+    Order matters on a 16 GB box (ARCHITECTURE §5): load voice + STT FIRST, then warm the
+    LLM LAST and TWICE with the REAL prompt shape (real SYSTEM + real-sized retrieved
+    excerpts) so the large-prompt path (KV-cache alloc + Metal kernels for the ~1.3k-token
+    context) is hot. Co-resident Kokoro/Whisper disturb the LLM's GPU residency, so the
+    first LLM call after they load pays a one-time re-warm — we pay it here. It calls
+    chat_json directly (bypassing the gate) so it always exercises the LLM."""
+    import common
+    from common import chat_json
+
+    # 1. Voice (Kokoro ONNX graph warm-up ~2.6 s on first create()).
+    try:
+        synth_to_numpy("Ready.")
+    except Exception:
+        pass
+
+    # 2. Speech-to-text (Whisper first-load).
+    try:
+        silent = str(MODELS / "_warmup_silence.wav")
+        sf.write(silent, np.zeros(int(0.3 * SAMPLE_RATE), dtype=np.float32), SAMPLE_RATE)
+        transcribe_wav(silent)
+    except Exception:
+        pass
+
+    # 3. LLM LAST, with the real prompt shape, TWICE (pay the co-residency re-warm now).
+    try:
+        hits = _bg_runner.run(retriever.search("label jam fault lockout tagout", MACHINE_ID, k=5))
+        excerpts = "\n\n".join(
+            f"[{h['id']}] {h.get('procedure_title', '')} — {h.get('section', '')}\n{h.get('text', '')}"
+            for h in hits
+        )
+        warm_user = f"Question: warm-up\n\nSOP excerpts:\n{excerpts}"
+        if excerpts.strip():
+            chat_json(core.SYSTEM, warm_user)
+            chat_json(core.SYSTEM, warm_user)
+        else:
+            common.warmup_llm()
+    except Exception:
+        common.warmup_llm()  # fallback: at least load the weights
+
+
+# ---------------------------------------------------------------------------
 # Voice loop (main thread)
 # ---------------------------------------------------------------------------
-def voice_loop() -> None:
+def voice_loop(retriever=None) -> None:
     """The interactive demo loop. Runs until Ctrl-C."""
-    retriever = make_retriever()
+    if retriever is None:
+        retriever = make_retriever()
     swarm = get_swarm(MACHINE_ID, retriever, _on_bubble_update)
 
     # Confirm a default input device exists (informational only — demo may still work).
@@ -603,11 +653,19 @@ def main() -> int:
     if args.selftest:
         return selftest()
 
-    # Live demo: start HTTP server, run voice loop.
+    # Live demo: start HTTP server FIRST, warm every model to kill the turn-1 cold cliff,
+    # then run the loop.
     _start_http_server()
     print(f"Screen live at: http://localhost:{PORT}/")
+    print("[warmup] Pre-loading models (LLM, voice, speech-to-text)…")
+    retriever = make_retriever()
     try:
-        voice_loop()
+        warmup(retriever)
+        print("[warmup] Ready — models warm.")
+    except Exception as exc:
+        print(f"[warmup] skipped ({exc}) — first turn may be slower.")
+    try:
+        voice_loop(retriever)
     except KeyboardInterrupt:
         print("\nBye.")
     return 0

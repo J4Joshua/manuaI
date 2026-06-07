@@ -93,6 +93,27 @@ class ContextSwarm:
         self._depth = 0
         self._swarm_started = False
         self._prior_queries: list[str] = []
+        # Yield-to-foreground gate: Ollama is single-stream, so a background swarm
+        # chat_json mid-flight queues the operator's next answer (~+2 s). core.answer
+        # marks the foreground busy; the swarm awaits idle before each LLM/search call.
+        self._fg_active = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+
+    def foreground_begin(self) -> None:
+        """Called by core.answer (on the bg loop) when a real answer starts."""
+        self._fg_active += 1
+        self._idle.clear()
+
+    def foreground_end(self) -> None:
+        self._fg_active = max(0, self._fg_active - 1)
+        if self._fg_active == 0:
+            self._idle.set()
+
+    async def _await_foreground_idle(self) -> None:
+        """Pause the background swarm while a foreground answer is in flight."""
+        if not self._idle.is_set():
+            await self._idle.wait()
 
     def snapshot(self) -> dict:
         return {
@@ -235,11 +256,13 @@ class ContextSwarm:
     async def _swarm_loop(self) -> None:
         try:
             while self._depth < MAX_DEPTH and len(self._chunks) < MAX_CHUNKS:
+                await self._await_foreground_idle()  # never compete with a live answer
                 self._depth += 1
                 queries = await self._propose_queries()
                 if not queries:
                     break
                 for q in queries:
+                    await self._await_foreground_idle()
                     self._prior_queries.append(q)
                     hits = await self.retriever.search(q, self.machine_id, k=3)
                     await self._ingest_hits(hits, "swarm", q)

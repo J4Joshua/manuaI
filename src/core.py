@@ -84,13 +84,24 @@ def _escalated(question, machine_id, reason, top_score, threshold, corroboration
     }
 
 
-def _merge_hits(primary_hits: list, swarm) -> list:
-    """Primary Moss hits first, then swarm-prefetched chunks (deduped by id)."""
+# Cap the chunks fed to the LLM. The primary (gate-ranked) hits are ALWAYS kept; the
+# swarm only fills the remainder. This bounds prompt-processing time AND keeps the prompt
+# safely inside Ollama's 4096-token context — without it, a large corpus could let the
+# swarm push the prompt past the window and trigger context-shift, which drops the OLDEST
+# tokens (the SYSTEM prompt) and would silently break cite-or-refuse. ~10 chunks ≈ 2.1k
+# tokens + system ≈ 2.6k, comfortably under 4096.
+MAX_MERGED_HITS = 10
+
+
+def _merge_hits(primary_hits: list, swarm, cap: int = MAX_MERGED_HITS) -> list:
+    """Primary Moss hits first, then swarm-prefetched chunks (deduped by id), capped."""
     if not swarm:
-        return list(primary_hits)
+        return list(primary_hits)[:cap]
     seen = {h["id"] for h in primary_hits}
     merged = list(primary_hits)
     for h in swarm.get_hits():
+        if len(merged) >= cap:
+            break
         if h["id"] not in seen:
             merged.append(h)
             seen.add(h["id"])
@@ -142,6 +153,19 @@ async def answer(
     flip a refusal (ARCHITECTURE.md §3d).
     swarm (optional) = background Moss context prefetch; supplemental chunks merged into
     the LLM prompt after the primary retrieval."""
+    # Mark the foreground busy so the background swarm yields the single-stream Ollama
+    # to this answer (it pauses before its own LLM/search calls). finally-released on
+    # every exit branch. No-op when there's no swarm.
+    if swarm is not None:
+        swarm.foreground_begin()
+    try:
+        return await _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm)
+    finally:
+        if swarm is not None:
+            swarm.foreground_end()
+
+
+async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm):
     threshold = retriever.threshold
 
     # Two simultaneous, source-separated retrievals: SOPs (authoritative) + chats (supplemental).
