@@ -556,6 +556,9 @@ html, body {
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 .cam-stage video { width: 100%; height: 100%; object-fit: cover; display: block; filter: contrast(1.05); }
+.cam-stage img   { width: 100%; height: 100%; object-fit: cover; filter: contrast(1.05); }
+/* [hidden] must beat .cam-placeholder/.cam-overlay display:flex, or showLive() can't reveal the feed. */
+.cam-stage [hidden] { display: none !important; }
 .cam-vignette {
   position: absolute; inset: 0; pointer-events: none;
   background: linear-gradient(180deg, rgba(0,0,0,.15), transparent 30%, transparent 70%, rgba(0,0,0,.35));
@@ -770,6 +773,7 @@ html, body {
       </div>
       <div class="cam-stage">
         <video id="cam-video" autoplay playsinline muted></video>
+        <img id="cam-img" alt="Ray-Ban live feed" style="display:none" />
         <div class="cam-placeholder" id="cam-placeholder">
           <div class="glasses"><span class="bridge"></span></div>
           <div class="ptxt" id="cam-ptxt">Pairing with Ray-Ban glasses…</div>
