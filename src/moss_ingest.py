@@ -1,61 +1,56 @@
 #!/usr/bin/env python3
-"""Build the Moss cloud index from the shared corpus chunker (corpus.build_chunks).
+"""Build the Moss-embedded local corpus index (data/moss_index.json).
 
-Embeds locally with Moss's on-device embedder, then uploads precomputed vectors
-(model_id=custom) so cloud and local indexes stay in parity.
+Embeds section-chunks from data/machines/*/sops/*.md with Moss's on-device
+embedder (PyEmbeddingService / moss-minilm by default). Fully offline — no Moss
+cloud calls. Run after adding or editing SOPs:
 
-Online — create_index builds in the cloud (ARCHITECTURE.md §12a). Run with wifi ON:
     .venv/bin/python src/moss_ingest.py
 
-Also run moss_embed_local.py to refresh data/moss_index.json for offline retrieval.
+The output is consumed by MossRetriever (retriever.py) for cold-start retrieval.
 """
-import asyncio
-import os
+import json
+from pathlib import Path
 
 import corpus
-import moss_corpus
 import moss_embed
-from retriever import load_env, make_client
+import paths
+from retriever import load_env
 
 
-async def main():
+def embed_and_write(chunks: list[dict]) -> Path:
+    """Embed chunks with Moss locally and write data/moss_index.json."""
     load_env()
-    client = make_client()
-    index = os.getenv("MOSS_INDEX_NAME", "manuals")
-
-    chunks = corpus.build_chunks()
-    texts = [c["text"] for c in chunks]
     mid = moss_embed.model_id()
-    print(f"embedding {len(texts)} chunks locally with {mid}…")
+    texts = [c["text"] for c in chunks]
+    print(f"embedding {len(texts)} chunks with {mid} (local, offline)…")
     vectors = moss_embed.embed_texts(texts, mid)
-    docs = [
-        moss_corpus.chunk_to_doc_info(c, vec)
-        for c, vec in zip(chunks, vectors)
-    ]
+    dim = len(vectors[0]) if vectors else moss_embed.embed_dim(mid)
 
-    by_machine = {}
-    for d in docs:
-        by_machine[d.metadata["machine_id"]] = by_machine.get(d.metadata["machine_id"], 0) + 1
-    print(f"built {len(docs)} section-chunks: {by_machine}")
-    for d in docs:
-        print(f"   {d.id:<28} [{d.metadata['machine_id']}] §={d.metadata['section']!r}")
+    records = []
+    for c, vec in zip(chunks, vectors):
+        rec = {k: v for k, v in c.items()}
+        rec["vector"] = vec
+        records.append(rec)
 
-    existing = {i.name for i in await client.list_indexes()}
-    if index in existing:
-        print(f"deleting existing '{index}'…")
-        await client.delete_index(index)
-    print(f"create_index('{index}', {len(docs)} docs, 'custom')…")
-    await client.create_index(index, docs, "custom")
-    for _ in range(45):
-        st = str(getattr(await client.get_index(index), "status", "?"))
-        if any(s in st.upper() for s in ("READY", "ACTIVE", "COMPLETE", "SUCCEED")):
-            print(f"index READY ({st})")
-            return
-        if "FAIL" in st.upper():
-            raise SystemExit(f"index build failed: {st}")
-        await asyncio.sleep(2)
-    print("warning: index not confirmed READY (continuing).")
+    out = paths.MOSS_INDEX_JSON
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"model_id": mid, "embed_dim": dim, "chunks": records}
+    with open(out, "w") as f:
+        json.dump(payload, f)
+
+    by = {}
+    for c in records:
+        by[c["machine_id"]] = by.get(c["machine_id"], 0) + 1
+    print(f"wrote {out.relative_to(paths.REPO)}: {len(records)} chunks  model={mid} dim={dim}")
+    for machine, n in sorted(by.items()):
+        print(f"   {machine:<16} {n}")
+    return out
+
+
+def main():
+    embed_and_write(corpus.build_chunks())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

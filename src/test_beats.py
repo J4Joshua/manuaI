@@ -4,8 +4,8 @@ Run after ANY corpus / prompt change (ARCHITECTURE.md G8). Exit 0 = all pass.
 
     .venv/bin/python src/test_beats.py
 
-Uses LocalMossRetriever when data/moss_index.json exists (fully offline). Run
-moss_embed_local.py after corpus changes. Refusals rely on the LLM task-match few-shot.
+Uses MossRetriever over data/moss_index.json (fully offline). Run moss_ingest.py
+after corpus changes. Refusals rely on the LLM task-match few-shot.
 """
 import asyncio
 import sys

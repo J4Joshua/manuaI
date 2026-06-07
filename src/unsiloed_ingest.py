@@ -1,32 +1,25 @@
 #!/usr/bin/env python3
-"""Phase 4 — Unsiloed ingestion (ARCHITECTURE.md §4b, §12).
+"""Phase 4 — Unsiloed ingestion (ARCHITECTURE.md §4b).
 
-Pipeline (cloud + one-time, wifi ON):
+Pipeline (Unsiloed cloud + one-time, wifi ON for PDF parse only):
     real manual PDFs  →  Unsiloed Parse (HTTP, async-poll)
-                      →  Unsiloed Extract (custom JSON schema, per-chunk)   [TODO(needs-api-key)]
+                      →  Unsiloed Extract (custom JSON schema, per-chunk)
                       →  normalize → corpus.py chunk schema
-                      →  Moss index (alongside hand-authored SOP chunks)
-
-Run with wifi ON after `moss_ingest.py` has run at least once
-(so the index exists and can be rebuilt here with the union corpus).
+                      →  moss_ingest.embed_and_write (SOP + PDF union, offline Moss embed)
 
 Usage:
     .venv/bin/python src/unsiloed_ingest.py [--dry-run] [--pdf path/to/manual.pdf]
 
-    --dry-run   Normalise chunks and print stats; skip Moss create_index (no Moss creds needed).
-    --pdf       Process a single PDF instead of all manuals (useful for smoke-testing one doc).
-    (no args)   Process every data/machines/*/manuals/*.pdf not listed in manifest intentional_gaps.
+    --dry-run   Normalise chunks and print stats; skip local Moss index build.
+    --pdf       Process a single PDF instead of all manuals.
+    (no args)   Process every data/machines/*/manuals/*.pdf in manifest.
 
 Env vars (from .env / .env.example):
-    UNSILOED_API_KEY       required — exit cleanly if unset
+    UNSILOED_API_KEY       required (except --dry-run)
     UNSILOED_BASE_URL      default https://prod.visionapi.unsiloed.ai
-    MOSS_PROJECT_ID        required for Moss load (not for --dry-run)
-    MOSS_PROJECT_KEY       required for Moss load (not for --dry-run)
-    MOSS_INDEX_NAME        default "manuals"
-    MOSS_MODEL_ID          default "moss-minilm"
+    MOSS_MODEL_ID          default moss-minilm (local embedder, offline)
 
-Imports: stdlib only for HTTP (urllib) + project-local corpus / retriever / inferedge_moss.
-No `requests` import anywhere — file must import without it.
+Imports: stdlib only for HTTP (urllib) + project-local corpus / moss_ingest.
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,7 +51,6 @@ No `requests` import anywhere — file must import without it.
 # fault_codes, page, text.
 # ─────────────────────────────────────────────────────────────────────────────
 
-import asyncio
 import json
 import os
 import re
@@ -69,12 +61,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Project-local — both are already in the venv (see requirements.txt).
-# inferedge_moss is imported inside the async Moss block so --dry-run works
-# without Moss creds being present.
+# Project-local imports (see requirements.txt).
 import corpus
 import paths
-from retriever import load_env, make_client
+from moss_ingest import embed_and_write
+from retriever import load_env
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -576,65 +567,21 @@ def _is_intentional_gap(doc_info):
     return any(kw in combined for kw in _INTENTIONAL_GAP_KEYWORDS)
 
 
-import moss_corpus
-import moss_embed
-    """
-    Build (or rebuild) the Moss index from the union of:
-      • hand-authored SOP chunks (corpus.build_chunks())
-      • Unsiloed-normalized PDF chunks (all_chunks arg)
-
-    Mirrors moss_ingest.py exactly: delete existing index → create_index with all docs.
-
-    # TODO(needs-api-key): Calls Moss cloud API (create_index is a cloud build step —
-    # ARCHITECTURE.md §12a).  load_index / queries are local after this.
-    """
-    load_env()
-    client = make_client()
-    index = os.getenv("MOSS_INDEX_NAME", "manuals")
-
+def write_local_index(pdf_chunks):
+    """Rebuild data/moss_index.json from SOP chunks + Unsiloed PDF chunks."""
     sop_chunks = corpus.build_chunks()
-    all_chunk_dicts = sop_chunks + list(all_chunks)
-    texts = [c["text"] for c in all_chunk_dicts]
-    mid = moss_embed.model_id()
-    print(f"Embedding {len(texts)} chunks locally with {mid}…")
-    vectors = moss_embed.embed_texts(texts, mid)
-    all_docs = [
-        moss_corpus.chunk_to_doc_info(c, vec)
-        for c, vec in zip(all_chunk_dicts, vectors)
-    ]
-    sop_docs = all_docs[: len(sop_chunks)]
-    pdf_docs = all_docs[len(sop_chunks) :]
-
+    all_chunks = sop_chunks + list(pdf_chunks)
     by_machine = {}
-    for d in all_docs:
-        key = d.metadata.get("machine_id", "?")
-        by_machine[key] = by_machine.get(key, 0) + 1
+    for c in all_chunks:
+        by_machine[c["machine_id"]] = by_machine.get(c["machine_id"], 0) + 1
     print(
-        f"\nMoss: {len(all_docs)} total docs ({len(sop_docs)} SOP + {len(pdf_docs)} PDF)"
-        f"  by machine: {by_machine}"
+        f"\nLocal Moss index: {len(all_chunks)} chunks "
+        f"({len(sop_chunks)} SOP + {len(pdf_chunks)} PDF)  by machine: {by_machine}"
     )
-    for d in all_docs:
-        src = "PDF" if d.metadata.get("doc_type") == "manual" else "SOP"
-        print(f"   [{src}] {d.id:<32}  [{d.metadata['machine_id']}]  §={d.metadata['section']!r}")
-
-    existing = {i.name for i in await client.list_indexes()}
-    if index in existing:
-        print(f"Deleting existing '{index}' index…")
-        await client.delete_index(index)
-
-    print(f"create_index('{index}', {len(all_docs)} docs, model='custom')…")
-    await client.create_index(index, all_docs, "custom")
-
-    # Poll until READY (mirrors moss_ingest.py poll pattern).
-    for _ in range(45):
-        st = str(getattr(await client.get_index(index), "status", "?"))
-        if any(s in st.upper() for s in ("READY", "ACTIVE", "COMPLETE", "SUCCEED")):
-            print(f"Index READY ({st})")
-            return
-        if "FAIL" in st.upper():
-            raise SystemExit(f"Moss index build failed: {st}")
-        await asyncio.sleep(2)
-    print("Warning: index not confirmed READY within poll window (continuing).")
+    for c in all_chunks:
+        src = "PDF" if c.get("doc_type") == "manual" else "SOP"
+        print(f"   [{src}] {c['id']:<32}  [{c['machine_id']}]  §={c['section']!r}")
+    embed_and_write(all_chunks)
 
 
 # ── Per-PDF processing ────────────────────────────────────────────────────────
@@ -744,7 +691,7 @@ def main():
         pdf_paths = _find_pdfs()
 
     print(f"\nUnsiloed ingestion — {len(pdf_paths)} PDF(s)  base_url={base_url!r}")
-    print(f"  dry_run={args.dry_run}  index={os.getenv('MOSS_INDEX_NAME', 'manuals')!r}\n")
+    print(f"  dry_run={args.dry_run}\n")
 
     all_chunks = []
     skipped    = []
@@ -773,24 +720,17 @@ def main():
     )
 
     if args.dry_run:
-        print("\n[dry-run] Skipping Moss load.  Re-run without --dry-run to build the index.")
+        print("\n[dry-run] Skipping local Moss index build.")
         return
 
-    # Step 4: load into Moss (alongside SOP chunks).
-    # TODO(needs-api-key): Moss create_index is a cloud build step (wifi required).
     if not all_chunks:
-        print("No chunks to load — nothing to do.")
+        print("No chunks to index — nothing to do.")
         return
 
-    asyncio.run(load_into_moss(all_chunks))
+    write_local_index(all_chunks)
     print(
-        "\nPhase 4 complete. The Moss index now contains both SOP and real-manual chunks.\n"
-        "Next: run moss_demo.py and ask a question whose answer lives only in the real manual\n"
-        "to verify a correct page citation (Phase 4 DoD).\n"
-        "\nREMINDER (ARCHITECTURE §12a / G14):\n"
-        "  load_index fetches the snapshot over the network (~10 s).\n"
-        "  For wifi-off demo: authenticate + load_index ONLINE, keep the process alive,\n"
-        "  THEN turn wifi off — do NOT restart mid-demo.\n"
+        "\nPhase 4 complete. data/moss_index.json now contains SOP + real-manual chunks.\n"
+        "Next: ask a question whose answer lives only in the real manual to verify retrieval.\n"
     )
 
 

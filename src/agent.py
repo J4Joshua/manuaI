@@ -8,7 +8,7 @@ ARCHITECTURE
                                                   ↓
                          data channel (topic "screen_state") → Phase 2 screen.html
 
-The BRAIN is ``core.answer``: it retrieves SOPs (MossRetriever), gates,
+The BRAIN is ``core.answer``: it retrieves SOPs (offline MossRetriever), gates,
 calls Ollama (qwen2.5:3b), and returns a complete ``screen_state`` dict
 (ARCHITECTURE.md §3b). We intercept the LiveKit LLM step via ``Agent.llm_node`` and
 run ``core.answer`` there — no external LLM ever produces the spoken answer.

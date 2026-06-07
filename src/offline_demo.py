@@ -410,17 +410,13 @@ def selftest() -> int:
         return 1
 
     # -- Retriever --
-    print("\n[check] retriever…")
+    print("\n[check] MossRetriever…")
     try:
         retriever = make_retriever()
+        print(f"  {len(retriever.index)} chunks loaded  ← OK")
     except SystemExit as exc:
         print(f"  FAIL — {exc}")
         return 1
-    if hasattr(retriever, "index") and isinstance(retriever.index, list):
-        print(f"  {type(retriever).__name__}: {len(retriever.index)} chunks  ← OK")
-    else:
-        asyncio.run(retriever.ensure_loaded())
-        print(f"  {type(retriever).__name__}: index {retriever.index!r} loaded  ← OK")
 
     # Helper: TTS → wav → STT → brain
     def _roundtrip(label: str, utterance: str) -> dict | None:

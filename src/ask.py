@@ -4,7 +4,7 @@
     .venv/bin/python src/ask.py "the labeler on line 3 jammed and shows error E-42"
     .venv/bin/python src/ask.py --machine cobot-cellA "robot in cell A shows fault C4"
 
-Uses make_retriever() — prefers data/moss_index.json (offline) when present.
+Uses make_retriever() — offline Moss index at data/moss_index.json.
 """
 import argparse
 import asyncio

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared corpus chunker: data/machines/*/sops/*.md -> section-level chunk dicts.
 
-Used by moss_embed_local.py and moss_ingest.py. One chunker = one source of truth.
+Used by moss_ingest.py. One chunker = one source of truth.
 
 chunk = {id, sop_id, section, machine_id, doc_type, procedure_title,
          safety_flag(bool), fault_codes(str), page(None), text}
