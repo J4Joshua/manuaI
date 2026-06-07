@@ -116,7 +116,9 @@ class MossRetriever:
                 "section": md.get("section"),
                 "procedure_title": md.get("procedure_title") or md.get("title"),
                 "doc_type": md.get("doc_type"),
-                "page": None,
+                # page is stored at Unsiloed-ingest time (str, "" when unknown); parse
+                # it back to int|None so citations can surface "p.12" (Phase 4 DoD).
+                "page": int(md["page"]) if str(md.get("page", "")).strip().isdigit() else None,
                 "safety_flag": str(md.get("safety_flag")).lower() == "true",
                 "fault_codes": md.get("fault_codes", ""),
             })
