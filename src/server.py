@@ -6,7 +6,7 @@ Routes:
     GET /              → screen.html (Phase 2 HTTP-poll screen — unchanged)
     GET /state         → LATEST screen_state as JSON (polled by screen.html ~600ms)
     GET /ask?q=...&machine=...
-                       → core.answer(q, machine, CosineRetriever()) → set LATEST → JSON
+                       → core.answer(q, machine, MossRetriever) → set LATEST → JSON
     GET /operator.html → operator.html (Phase 3 unified voice + live screen)   [NEW]
     GET /operator      → alias for /operator.html                              [NEW]
     GET /static/<file> → the locally-bundled livekit-client UMD + operator.js  [NEW]
@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 import core
 import paths
-from retriever import CosineRetriever, load_env
+from retriever import make_retriever, load_env
 
 # Load .env so LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are available to
 # /token (reuses retriever's stdlib-only os.environ.setdefault loader; harmless if
@@ -45,6 +45,8 @@ try:
     load_env()
 except Exception:
     pass
+
+RETRIEVER = make_retriever()
 
 SCREEN_HTML = paths.WEB / "screen.html"
 OPERATOR_HTML = paths.WEB / "operator.html"
@@ -254,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "q parameter required"}, 400)
                 return
             try:
-                state = asyncio.run(core.answer(q, machine, CosineRetriever()))
+                state = asyncio.run(core.answer(q, machine, RETRIEVER))
                 LATEST = state
                 self._send_json(state)
             except Exception as exc:

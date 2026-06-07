@@ -6,13 +6,12 @@
 The ONE function every consumer programs to. Produces a single `screen_state` dict on
 EVERY exit path (§3b) — no prints, no sys.exit. Flow:
 
-    retriever.search → THRESHOLD GATE (stub-only; Moss gate=None) → chat_json (forced
+    retriever.search → THRESHOLD GATE (Moss: threshold=None, skipped) → chat_json (forced
     JSON) → validate cited ⊆ retrieved → assemble screen_state (all fields from metadata).
 
-Refusal mechanism is dual (G15): the deterministic gate fires only for the cosine stub
-(threshold=0.70); on the Moss path (threshold=None) refusal comes from the LLM task-match
-judgment, which is why the SYSTEM prompt below carries a load-bearing few-shot negative
-example. Copy it verbatim — it is what makes off-domain refusal reliable on a 3B.
+Refusal on Moss (threshold=None) comes from the LLM task-match judgment — the SYSTEM
+prompt below carries a load-bearing few-shot negative example. Copy it verbatim — it is
+what makes off-domain refusal reliable on a 3B.
 """
 import asyncio
 import json
@@ -71,8 +70,7 @@ async def answer(question, machine_id, retriever, k=5):
     hits = await retriever.search(question, machine_id, k)
     top_score = hits[0]["score"] if hits else 0.0
 
-    # THRESHOLD GATE — deterministic, does NOT depend on the model. Fires only for the
-    # stub (threshold is a real number); Moss has threshold=None so it always proceeds.
+    # THRESHOLD GATE — deterministic when threshold is set. Moss has threshold=None.
     if not hits or (threshold is not None and top_score < threshold):
         return _escalated(
             question, machine_id,

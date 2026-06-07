@@ -28,6 +28,7 @@ models/
 # Logs / scratch
 *.log
 .audit/
+data/moss_index.json
 
 # Planning docs — kept local, out of the repo
 docs/PRD.md
