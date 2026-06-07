@@ -6,46 +6,72 @@
 
 ## Why it's different
 
-- **Offline-first.** Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally. The headline demo works with the internet unplugged — nothing leaves the floor.
+- **Offline-first.** Factory networks are spotty, locked down, and noisy; a fault-response copilot cannot fail because wifi drops. Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally. The headline demo works with the internet unplugged — nothing leaves the floor.
 - **Grounded or silent.** Every answer cites its source (`SOP-1187 §4.2`); if nothing in the corpus matches the task, it escalates to a supervisor rather than improvising. Safety-critical steps (lockout/tagout) surface *first*.
-- **Fast on-prem retrieval.** [Moss](https://www.moss.dev) for sub-10ms semantic search over the SOP corpus, with a fully-local cosine stub as the bulletproof-offline fallback.
+- **Fast on-prem retrieval.** [Moss](https://www.moss.dev) gives local semantic search over the SOP corpus. In our demo benchmark, Moss warm retrieval was about **8× faster than our FAISS baseline** — roughly **5–7 ms vs. 40–55 ms** for the same class of workload.
 - **Corroborated by prior incidents.** A *second* Moss index of operator chat logs (ingested through the same Unsiloed pipeline) is retrieved in parallel and **cross-checks** the SOP answer against how similar past issues were actually resolved — surfaced as a "prior incidents" note. It's supplemental: chats are never cited and can never flip a refusal (see [docs/ARCHITECTURE.md §14](docs/ARCHITECTURE.md)). `src/ask.py --chats`.
+
+## Sponsor tech
+
+ManuAI maps the sponsor technologies onto a simple factory-floor loop:
+
+- **Unsiloed** builds the knowledge base: messy SOP PDFs and manuals become page-aware chunks, titles, error codes, safety flags, and citation metadata.
+- **Moss** retrieves that knowledge quickly on-prem. It also enables the context swarm: background agents prefetch related SOPs, LOTO context, safety steps, and prior incidents while the foreground agent answers the operator.
+- **Qwen** turns retrieved SOP excerpts into a short local answer, but only if it can cite the retrieved chunks. If it cannot ground the answer, ManuAI escalates instead of inventing a procedure.
+
+Every runtime mode calls the same brain, `core.answer(...)`: retrieve SOP chunks, ask Qwen for forced JSON, validate citations, and return one `screen_state` for the CLI, browser screen, offline demo, and LiveKit operator UI.
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-  subgraph ING["① INGESTION — cloud · one-time · OFF the live query path"]
-    DOCS["SOPs &amp; OEM PDFs<br/>data/machines/*"] --> UNS["Unsiloed<br/>Parse + Extract"] --> CH["corpus.py<br/>section chunks + metadata"]
-  end
-  CH --> MX[("Moss index<br/>cloud-built")]
-  CH --> IX[("index.json<br/>local stub · nomic vectors")]
-
-  subgraph EDGE["② EDGE BOX — 100% local · Apple Silicon / MLX · runs WIFI-OFF"]
-    MIC(["🎙 mic"]) --> STT["STT · mlx-whisper"]
-    STT --> SEEK
-    subgraph CORE["core.answer( ) → screen_state"]
-      SEEK{"Retriever.search"} --> GATE["threshold gate<br/>(stub only)"] --> QWEN["Qwen2.5-3B · Ollama<br/>forced JSON · cite-or-refuse"]
-    end
-    QWEN --> TTS["TTS · Kokoro-ONNX"] --> SPK(["🔊 speaker"])
-    QWEN -->|screen_state| UIS["screen · screen.html<br/>SOP card · ⚠ safety · escalation"]
+flowchart LR
+  subgraph ING["Ingestion plane: wifi-on, one-time"]
+    DOCS["Factory SOPs, manuals, chat logs<br/>data/machines/* + data/chats/*"]
+    UNS["Unsiloed Parse + Extract<br/>pages, chunks, codes, safety flags"]
+    CORPUS["corpus.py / chat_ingest.py<br/>shared chunk schema"]
+    DOCS --> UNS --> CORPUS
+    CORPUS --> LOCAL_MOSS[("data/moss_index.json<br/>LocalMossRetriever")]
+    CORPUS --> CLOUD_MOSS[("Moss cloud index<br/>MossRetriever")]
+    CORPUS --> COSINE[("index.json<br/>CosineRetriever fallback")]
   end
 
-  MX -. "wifi-on · MossRetriever" .-> SEEK
-  IX -. "wifi-off · CosineRetriever" .-> SEEK
+  subgraph EDGE["Edge runtime: Apple Silicon, local-first"]
+    MIC["Mic or typed fault"]
+    STT["mlx-whisper<br/>local STT"]
+    RETRIEVE{"Retriever.search"}
+    SWARM["ContextSwarm<br/>background Moss prefetch"]
+    QWEN["Qwen2.5 via Ollama<br/>forced JSON cite-or-refuse"]
+    STATE["screen_state<br/>answer, citations, steps, safety, escalation"]
+    TTS["Kokoro-ONNX<br/>local TTS"]
+    SCREEN["screen.html / operator.html<br/>same renderer"]
 
-  subgraph DEL["③ DELIVERY — same brain + screen"]
-    OP["operator.html + LiveKit<br/>push-to-talk · WIFI-ON"]
-    OFF["offline_demo.py<br/>WebRTC-free · WIFI-OFF headline"]
+    MIC --> STT --> RETRIEVE
+    RETRIEVE --> QWEN --> STATE
+    STATE --> TTS
+    STATE --> SCREEN
+    SWARM -. "prefetch related SOP context" .-> RETRIEVE
+    RETRIEVE -. "seed after each answer" .-> SWARM
   end
-  OP --> MIC
+
+  subgraph MODES["Delivery modes"]
+    OFF["offline_demo.py<br/>WebRTC-free wifi-off headline"]
+    LK["agent.py + LiveKit + operator.html<br/>polished local-network push-to-talk"]
+    CLI["ask.py / server.py<br/>typed fallback + API"]
+  end
+
+  LOCAL_MOSS -->|"cold-start offline"| RETRIEVE
+  CLOUD_MOSS -. "load/auth online, query local while alive" .-> RETRIEVE
+  COSINE -. "deterministic fallback gate" .-> RETRIEVE
+
   OFF --> MIC
+  LK --> MIC
+  CLI --> MIC
 ```
 
 | Layer | Technology | Local / Cloud |
 |---|---|---|
 | Doc ingestion | **Unsiloed** — Parse + Extract → chunks | Cloud · one-time |
-| Retrieval | **Moss** (sub-10ms) · **CosineRetriever** stub | Moss = cloud-load/local-query · stub = fully local |
+| Retrieval | **LocalMossRetriever** · **MossRetriever** · **CosineRetriever** | Local Moss index = cold-start offline · sponsor Moss = online load/local query · cosine = fallback |
 | Embeddings | **nomic-embed-text** (Ollama) · Moss built-in | Local |
 | LLM | **Qwen2.5-3B** via **Ollama**, forced-JSON cite-or-refuse | Local |
 | Speech-to-text | **Whisper** via **mlx-whisper** | Local |

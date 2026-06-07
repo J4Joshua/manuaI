@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import threading
+import time
+from datetime import datetime, timezone
 from typing import Callable
 
 from common import chat_json
@@ -45,7 +47,15 @@ def swarm_enabled() -> bool:
 
 
 def empty_bubble() -> dict:
-    return {"status": "idle", "lines": [], "updates": [], "chunk_count": 0}
+    return {"status": "idle", "lines": [], "updates": [], "queries": [], "chunk_count": 0}
+
+
+def _iso_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def with_bubble(state: dict, swarm: "ContextSwarm | None") -> dict:
@@ -92,6 +102,9 @@ class ContextSwarm:
         self._depth = 0
         self._swarm_started = False
         self._prior_queries: list[str] = []
+        self._queries: list[dict] = []
+        self._query_seq = 0
+        self._swarm_task: asyncio.Task | None = None
         # Yield-to-foreground gate: Ollama is single-stream, so a background swarm
         # chat_json mid-flight queues the operator's next answer (~+2 s). core.answer
         # marks the foreground busy; the swarm awaits idle before each LLM/search call.
@@ -119,6 +132,7 @@ class ContextSwarm:
             "status": self._status,
             "lines": list(self._lines),
             "updates": list(self._updates[-8:]),
+            "queries": list(self._queries[-20:]),
             "chunk_count": len(self._chunks),
         }
 
@@ -127,6 +141,23 @@ class ContextSwarm:
 
     def set_on_update(self, cb: Callable[[dict], None] | None) -> None:
         self._on_update = cb
+
+    async def reset_for_question(self) -> None:
+        """Clear session bubble state so each operator prompt starts fresh."""
+        async with self._lock:
+            if self._swarm_task and not self._swarm_task.done():
+                self._swarm_task.cancel()
+            self._swarm_task = None
+            self._chunks.clear()
+            self._lines.clear()
+            self._updates.clear()
+            self._queries.clear()
+            self._prior_queries.clear()
+            self._status = "idle"
+            self._depth = 0
+            self._swarm_started = False
+            self._query_seq = 0
+        self._notify()
 
     def _notify(self) -> None:
         if self._on_update:
@@ -141,6 +172,8 @@ class ContextSwarm:
         added_lines: list[dict],
         source: str,
         query: str | None,
+        query_id: str | None = None,
+        duration_ms: int | None = None,
     ) -> None:
         n = len(added_lines)
         chunk_ids = [ln["chunk_id"] for ln in added_lines]
@@ -156,20 +189,73 @@ class ContextSwarm:
         }
         if query:
             update["query"] = query
+        if query_id:
+            update["query_id"] = query_id
+        if duration_ms is not None:
+            update["duration_ms"] = duration_ms
         self._updates.append(update)
         self._updates = self._updates[-20:]
 
-    async def after_answer(self, question: str, primary_hits: list[dict]) -> None:
-        if not self.enabled or not primary_hits:
-            return
-        await self._ingest_hits(primary_hits, "seed", question)
-        if not self._swarm_started:
-            self._swarm_started = True
-            asyncio.create_task(self._swarm_loop())
+    def _start_query(self, query: str | None, source: str) -> str:
+        qid = f"q{self._query_seq}"
+        self._query_seq += 1
+        self._queries.append(
+            {
+                "id": qid,
+                "query": (query or "").strip(),
+                "source": source,
+                "status": "running",
+                "started_at": _iso_now(),
+                "finished_at": None,
+                "duration_ms": None,
+                "chunk_ids": [],
+                "chunks_added": 0,
+            }
+        )
+        return qid
 
-    async def _ingest_hits(self, hits: list[dict], source: str, query: str | None = None) -> bool:
-        added = False
+    def _finish_query(
+        self,
+        query_id: str,
+        *,
+        added_lines: list[dict],
+        duration_ms: int,
+    ) -> None:
+        for q in self._queries:
+            if q["id"] != query_id:
+                continue
+            q["status"] = "done"
+            q["finished_at"] = _iso_now()
+            q["duration_ms"] = duration_ms
+            q["chunk_ids"] = [ln["chunk_id"] for ln in added_lines]
+            q["chunks_added"] = len(added_lines)
+            break
+
+    async def _execute_retrieval(
+        self,
+        query: str | None,
+        source: str,
+        *,
+        k: int = 3,
+        hits: list[dict] | None = None,
+    ) -> bool:
+        """Run one Moss query with live bubble pushes: running → chunks → done + timing."""
+        qtext = (query or "").strip()
+        t0 = time.perf_counter()
+
+        async with self._lock:
+            if source == "refresh" and self._status == "refreshing":
+                pass
+            else:
+                self._status = "gathering"
+            query_id = self._start_query(qtext, source)
+        self._notify()
+
+        if hits is None:
+            hits = await self.retriever.search(qtext, k=k) if qtext else []
+
         added_lines: list[dict] = []
+        added = False
         async with self._lock:
             for h in hits:
                 cid = h["id"]
@@ -183,17 +269,31 @@ class ContextSwarm:
                     "score": round(float(h["score"]), 3),
                     "source": source,
                 }
-                if query:
-                    line["query"] = query
+                if qtext:
+                    line["query"] = qtext
                 self._lines.append(line)
                 added_lines.append(line)
                 added = True
+            duration_ms = max(0, round((time.perf_counter() - t0) * 1000))
+            self._finish_query(query_id, added_lines=added_lines, duration_ms=duration_ms)
             if added:
-                self._status = "gathering"
-                self._append_update(added_lines=added_lines, source=source, query=query)
-        if added:
-            self._notify()
+                self._append_update(
+                    added_lines=added_lines,
+                    source=source,
+                    query=qtext or None,
+                    query_id=query_id,
+                    duration_ms=duration_ms,
+                )
+        self._notify()
         return added
+
+    async def after_answer(self, question: str, primary_hits: list[dict]) -> None:
+        if not self.enabled or not primary_hits:
+            return
+        await self._execute_retrieval(question, "seed", hits=primary_hits)
+        if not self._swarm_started:
+            self._swarm_started = True
+            self._swarm_task = asyncio.create_task(self._swarm_loop())
 
     async def refresh(self, question: str | None = None) -> dict:
         """Force one foreground swarm pass and return the latest UI snapshot."""
@@ -206,8 +306,7 @@ class ContextSwarm:
 
         before = len(self._chunks)
         if question and len(self._chunks) < MAX_CHUNKS:
-            hits = await self.retriever.search(question, k=5)
-            await self._ingest_hits(hits, "refresh", question)
+            await self._execute_retrieval(question, "refresh", k=5)
 
         if len(self._chunks) < MAX_CHUNKS:
             queries = await self._propose_queries()
@@ -215,12 +314,19 @@ class ContextSwarm:
                 if q in self._prior_queries:
                     continue
                 self._prior_queries.append(q)
-                hits = await self.retriever.search(q, k=3)
-                await self._ingest_hits(hits, "refresh", q)
+                await self._execute_retrieval(q, "refresh", k=3)
 
         async with self._lock:
-            if len(self._chunks) == before:
-                self._append_update(added_lines=[], source="refresh", query=question)
+            if len(self._chunks) == before and question:
+                query_id = self._start_query(question, "refresh")
+                self._finish_query(query_id, added_lines=[], duration_ms=0)
+                self._append_update(
+                    added_lines=[],
+                    source="refresh",
+                    query=question,
+                    query_id=query_id,
+                    duration_ms=0,
+                )
             self._status = "ready"
             snap = self.snapshot()
         self._notify()
@@ -262,11 +368,12 @@ class ContextSwarm:
                 for q in queries:
                     await self._await_foreground_idle()
                     self._prior_queries.append(q)
-                    hits = await self.retriever.search(q, k=3)
-                    await self._ingest_hits(hits, "swarm", q)
+                    await self._execute_retrieval(q, "swarm", k=3)
                 await asyncio.sleep(ROUND_PAUSE_SECS)
             self._status = "ready"
             self._notify()
+        except asyncio.CancelledError:
+            return
         except Exception:
             logger.exception("context_swarm loop failed")
             self._status = "ready"

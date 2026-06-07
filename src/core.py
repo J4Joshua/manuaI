@@ -175,6 +175,9 @@ async def answer(
 
 
 async def _answer_impl(question, retriever, k, chat_retriever, swarm):
+    if swarm:
+        await swarm.reset_for_question()
+
     threshold = retriever.threshold
 
     # Two simultaneous, source-separated retrievals: SOPs (authoritative) + chats (supplemental).
