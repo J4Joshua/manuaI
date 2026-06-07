@@ -11,6 +11,11 @@ pronounced as /ˈmæn.ju.əl/ (manual)
 - Manufacturing companies lose hundreds of thousands of dollars per hour due to operator mistakes.
 - Operators have to refer to hundreds of SOPs, ManuAIs and tribal knowledge in chats
 
+## Solution
+
+- A corpus of ManuAIs, SOPs and chats ingested by Unsiloed and retrieved by Moss powering a live agent sitting on an edge box
+- Input through mandatory AI safety goggles (Meta Raybans) to stream audio and video as context while moving freely (hands free), **WITHOUT** reception/Wifi.
+
 ## Why it's different
 
 - **Offline-first.** Factory networks are spotty, locked down, and noisy; a fault-response copilot cannot fail because wifi drops. Retrieval (Moss), Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally.
@@ -23,7 +28,7 @@ ManuAI maps the sponsor technologies onto a simple factory-floor loop:
 
 - **Unsiloed** builds the knowledge base: messy SOP PDFs, manuAIs and chats become page-aware chunks, titles, error codes, safety flags, and citation metadata.
 - **Moss** retrieves that knowledge quickly on-prem. It also enables the context swarm: background agents prefetch related SOPs, LOTO context, safety steps, and prior incidents while the foreground agent answers the operator.
-- **Qwen** turns retrieved SOP excerpts into a short local answer, but only if it can cite the retrieved chunks. If it cannot ground the answer, ManuAI escalates instead of inventing a procedure.
+- **Qwen** we used Qwen2.5-VL-3B-Instruct to create a short local answer, but only if it can cite the retrieved chunks.
 
 Every runtime mode calls the same brain, `core.answer(...)`: retrieve SOP chunks, ask Qwen for forced JSON, validate citations, and return one `screen_state` for the CLI, browser screen, offline demo, and LiveKit operator UI.
 
