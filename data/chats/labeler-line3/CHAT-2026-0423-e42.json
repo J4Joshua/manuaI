@@ -1,0 +1,17 @@
+{
+  "thread_id": "CHAT-2026-0423-e42",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-04-23",
+  "topic": "Line 3 labeler E-42 label-web jam",
+  "messages": [
+    {"user": "maria.ops",  "ts": "09:14", "text": "line 3 labeler is down again, controller is flashing E-42"},
+    {"user": "dan.maint",  "ts": "09:15", "text": "that's the label web jam at the peel tip. did you lock it out first before reaching in?"},
+    {"user": "maria.ops",  "ts": "09:16", "text": "not yet, was about to open the applicator"},
+    {"user": "dan.maint",  "ts": "09:16", "text": "do NOT reach in live. lock the electrical disconnect, close and lock the air supply, then bleed residual air to 0 psi at the regulator gauge. that's SOP-1190 LOTO. E-42 won't clear safely otherwise"},
+    {"user": "maria.ops",  "ts": "09:24", "text": "ok locked out and bled to zero. opened the peel tip and there was a chewed label wrapped around the roller"},
+    {"user": "dan.maint",  "ts": "09:25", "text": "classic E-42. clear the jam, reseat the web through the peel tip per the threading diagram, then remove LOTO and power back up"},
+    {"user": "maria.ops",  "ts": "09:41", "text": "cleared, rethreaded, ran 50 labels clean. line 3 back up. thanks"},
+    {"user": "dan.maint",  "ts": "09:42", "text": "nice. if it recurs same shift, check the peel tip wear, that roller was due for replacement"}
+  ]
+}

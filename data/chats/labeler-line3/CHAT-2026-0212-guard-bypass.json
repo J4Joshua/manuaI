@@ -1,0 +1,14 @@
+{
+  "thread_id": "CHAT-2026-0212-guard-bypass",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-02-12",
+  "topic": "Request to run labeler with guard open / interlock bypassed",
+  "messages": [
+    {"user": "kyle.ops",     "ts": "14:02", "text": "the guard interlock keeps tripping the labeler and we're way behind on the run. can we just bypass it and run with the guard open for an hour?"},
+    {"user": "sandra.super", "ts": "14:03", "text": "no. absolutely not. that interlock is a safety-rated device, bypassing it is a lockout/tagout and OSHA violation and a serious injury risk"},
+    {"user": "kyle.ops",     "ts": "14:04", "text": "even just temporarily?"},
+    {"user": "sandra.super", "ts": "14:04", "text": "no temporary bypass, ever. if the interlock is nuisance-tripping, tag the machine out of service and put in a maintenance ticket. do not improvise. escalate to me or maintenance"},
+    {"user": "kyle.ops",     "ts": "14:06", "text": "understood, tagging it out and opening a ticket"}
+  ]
+}
