@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0428-loto-question",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-04-28",
+  "topic": "Line 3 LOTO sequence question",
+  "messages": [
+    {
+      "user": "newhire.ops",
+      "ts": "09:00",
+      "text": "first time clearing a jam on line 3, what's the lockout order exactly?"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "09:02",
+      "text": "SOP-1190: 1) labeler STOP, 2) line E-STOP, 3) open and lock the electrical disconnect, 4) close and lock the air supply valve, 5) bleed residual air to 0 psi at the regulator gauge, 6) verify zero energy before reaching in"
+    },
+    {
+      "user": "newhire.ops",
+      "ts": "09:03",
+      "text": "why bleed the air if I already locked the valve?"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "09:04",
+      "text": "stored pneumatic energy can still actuate the applicator even with the valve locked. zero on the gauge is how you prove it's safe. never skip the bleed"
+    },
+    {
+      "user": "newhire.ops",
+      "ts": "09:05",
+      "text": "got it, lock then bleed to zero, verify gauge"
+    }
+  ]
+}

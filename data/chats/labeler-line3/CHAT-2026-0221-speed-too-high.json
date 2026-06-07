@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0221-speed-too-high",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-02-21",
+  "topic": "Line 3 SPEED TOO HIGH error",
+  "messages": [
+    {
+      "user": "sam.ops",
+      "ts": "10:15",
+      "text": "getting SPEED TOO HIGH on line 3 every few minutes, labels placing crooked"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "10:17",
+      "text": "the encoder thinks the product line is moving faster than the applicator can place. either the conveyor sped up or the apply speed is set too low for the line rate"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "10:19",
+      "text": "conveyor was bumped up this morning for the rush order"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "10:20",
+      "text": "match the labeler apply speed to the new line speed in the config, or bring the conveyor back down. don't run it crooked, you'll get UNLABELLED PRODUCT rejects"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "10:31",
+      "text": "retuned apply speed to the line, placement is square again"
+    }
+  ]
+}

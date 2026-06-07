@@ -1,0 +1,39 @@
+{
+  "thread_id": "CHAT-2026-0205-broken-web",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-02-05",
+  "topic": "Line 3 BROKEN WEB fault",
+  "messages": [
+    {
+      "user": "priya.ops",
+      "ts": "13:02",
+      "text": "line 3 stopped, panel says BROKEN WEB"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "13:04",
+      "text": "the web tension sensor lost the backing web - it either snapped or pulled out of the peel tip. lock out first before you open anything (SOP-1190)"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "13:10",
+      "text": "locked out and bled to zero. the backing tore right at the splice from the last roll change"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "13:11",
+      "text": "yep, bad splice. re-thread the web through the peel tip and sensor slot per the threading diagram, keep it flat and centered"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "13:20",
+      "text": "rethreaded, removed LOTO, ran 30 clean. back up"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "13:21",
+      "text": "when you splice, butt the ends, don't overlap - overlap is what tears at the peel tip"
+    }
+  ]
+}
