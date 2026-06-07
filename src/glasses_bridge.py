@@ -21,8 +21,10 @@ We satisfy all four so the app never errors / reconnect-loops, but only *act* on
                               mono PCM frames → streaming VAD → resample to 16 kHz →
                               transcribe_wav → run_pipeline (speaks on the laptop +
                               updates the screen).
-  ws  /publish                Video uplink. Accept, reply {"type":"video_off"} on
-                              connect, then drain & discard all JPEG/control frames.
+  ws  /publish                Ray-Ban live feed. Reply {"type":"video_on"} on connect,
+                              then store each JPEG as the latest frame, served to the
+                              operator UI as MJPEG at :8000/glasses.mjpeg (display-only —
+                              the brain is NOT fed video).
   ws  /agent-audio            Glasses-speaker downlink. Accept and idle — output is
                               the laptop, so we NEVER send anything back (locked: no
                               glasses-speaker downlink).
@@ -30,9 +32,10 @@ We satisfy all four so the app never errors / reconnect-loops, but only *act* on
                               harmlessly; it only fires on a user capture (out of
                               MVP scope) and never at startup.
 
-Scope is LOCKED (do not expand): audio-IN only; answer OUT on the laptop (speaker +
-screen). No glasses-speaker downlink, no video, no photo, no multi-turn/session —
-each utterance is an independent one-shot core.answer() via run_pipeline.
+Scope: audio-IN drives the answer OUT on the laptop (speaker + screen); the /publish
+video is relayed to the operator UI as a live feed (display-only — it does NOT feed the
+brain). No glasses-speaker downlink, no photo, no multi-turn/session — each utterance is
+an independent one-shot core.answer() via run_pipeline.
 
 ────────────────────────────────────────────────────────────────────────────────
 POST /publish/photo caveat (verified, deliberate)
@@ -147,6 +150,14 @@ _utterance_lock: asyncio.Lock | None = None   # serialise utterances (created in
 _speaking = False                              # True while a pipeline runs
 _cooldown_until = 0.0                          # loop.time() until which we keep dropping
 _tasks: set = set()                            # strong refs so dispatch tasks aren't GC'd mid-flight
+
+# Ray-Ban live feed: the latest JPEG from /publish. handle_publish writes it on the
+# asyncio loop; the screen server's /glasses.mjpeg reader runs in a separate daemon
+# thread. Copy the ref under _jpeg_lock, then write the socket OUTSIDE the lock so a
+# slow browser can never stall the (critical) audio loop.
+_latest_jpeg: bytes | None = None              # most recent JPEG frame
+_latest_jpeg_seq = 0                           # bumped each frame (MJPEG change-detection)
+_jpeg_lock = threading.Lock()
 
 
 def _log(msg: str) -> None:
@@ -366,13 +377,24 @@ async def handle_publish_audio(ws) -> None:
 
 
 async def handle_publish(ws) -> None:
-    """ws /publish — video uplink. Tell the glasses to stop sending video, then drain."""
+    """ws /publish — Ray-Ban live feed. Keep video ON, then store each JPEG frame as the
+    latest feed frame (served to the operator UI as MJPEG at :8000/glasses.mjpeg)."""
+    global _latest_jpeg, _latest_jpeg_seq
     try:
-        await ws.send(json.dumps({"type": "video_off"}))   # stop wasting BT bandwidth
-        async for _message in ws:
-            pass                                            # discard JPEG + control JSON
+        await ws.send(json.dumps({"type": "video_on"}))    # keep the live feed flowing
+        async for message in ws:
+            if isinstance(message, (bytes, bytearray)):
+                with _jpeg_lock:
+                    _latest_jpeg = bytes(message)
+                    _latest_jpeg_seq += 1
+            # text/control JSON: ignored (the brain is audio-only)
     except ConnectionClosed:
         pass
+    finally:
+        # Feed stopped → drop the last frame so the UI reverts to "pairing".
+        with _jpeg_lock:
+            _latest_jpeg = None
+            _latest_jpeg_seq += 1
 
 
 async def handle_agent_audio(ws) -> None:
@@ -487,6 +509,32 @@ class _ScreenHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _stream_mjpeg(self) -> None:
+        """Serve the Ray-Ban live feed as multipart/x-mixed-replace. Copy the latest JPEG
+        under the lock, write it OUTSIDE the lock, and exit cleanly when the browser
+        disconnects. ThreadingHTTPServer gives this its own daemon thread, so a
+        slow/blocked client never touches the audio loop or the other HTTP routes."""
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        last_seq = -1
+        try:
+            while True:
+                with _jpeg_lock:
+                    frame, seq = _latest_jpeg, _latest_jpeg_seq
+                if frame is not None and seq != last_seq:
+                    last_seq = seq
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
+                    self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(frame))
+                    self.wfile.write(frame)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                time.sleep(1.0 / 25.0)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # browser closed the feed
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/":
@@ -498,6 +546,17 @@ class _ScreenHandler(http.server.BaseHTTPRequestHandler):
             st = offline_demo._get_latest()
             st = {**st, "context_bubble": live_bubble_snapshot()}
             self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
+            return
+        if path == "/glasses.jpg":                # latest Ray-Ban frame (debug / readiness)
+            with _jpeg_lock:
+                frame = _latest_jpeg
+            if frame is None:
+                self.send_error(503, "no frame yet")
+                return
+            self._send(200, frame, "image/jpeg")
+            return
+        if path == "/glasses.mjpeg":              # Ray-Ban live feed (operator UI <img>)
+            self._stream_mjpeg()
             return
         # Static files under web/ (operator.html, screen.html, static/*) — path-guarded.
         rel = path.lstrip("/")
@@ -665,18 +724,23 @@ async def _drive_beat(label, utterance, expect_status, expect_sop, *, stub) -> b
 
 
 async def _check_publish_endpoint() -> bool:
+    """Connect /publish → expect video_on, push a JPEG, then assert it round-trips to the
+    operator UI via the screen server's /glasses.jpg (the Ray-Ban live feed relay)."""
     uri = f"ws://127.0.0.1:{GLASSES_PORT}/publish"
+    jpeg = b"\xff\xd8\xff\xe0fake-jpeg-bytes\xff\xd9"
     try:
         async with websockets.connect(uri, max_size=MAX_WS_MESSAGE) as ws:
             msg = await asyncio.wait_for(ws.recv(), timeout=3)
-            ok = json.loads(msg).get("type") == "video_off"
-            await ws.send(b"\xff\xd8\xff\xe0fake-jpeg-bytes")   # drained & discarded
-            await ws.send(json.dumps({"type": "pause"}))
-            await asyncio.sleep(0.2)
+            ok = json.loads(msg).get("type") == "video_on"
+            await ws.send(jpeg)                                 # stored as the latest frame
+            await ws.send(json.dumps({"type": "pause"}))        # control JSON: ignored
+            await asyncio.sleep(0.3)
+            status, body = await asyncio.to_thread(_http_get, offline_demo.PORT, "/glasses.jpg")
+            ok = ok and status == 200 and body == jpeg
     except Exception as exc:  # noqa: BLE001
         print(f"  [/publish] error: {exc}  → {_FAIL}")
         return False
-    print(f"  [/publish] video_off on connect + drains JPEG  → {_PASS if ok else _FAIL}")
+    print(f"  [/publish] video_on + JPEG relays to /glasses.jpg  → {_PASS if ok else _FAIL}")
     return ok
 
 
@@ -820,7 +884,7 @@ async def _run_suite(*, stub: bool) -> int:
     if stub:
         _install_wire_stubs()
     offline_demo.MODELS.mkdir(exist_ok=True)
-    offline_demo._start_http_server()
+    _start_screen_server()   # bridge _ScreenHandler — serves /glasses.jpg + /glasses.mjpeg
 
     results: list[bool] = []
     async with serve(_ws_handler, "127.0.0.1", GLASSES_PORT,
