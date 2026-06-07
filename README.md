@@ -31,8 +31,6 @@ flowchart LR
     CORPUS["corpus.py / chat_ingest.py<br/>shared chunk schema"]
     DOCS --> UNS --> CORPUS
     CORPUS --> LOCAL_MOSS[("data/moss_index.json<br/>LocalMossRetriever")]
-    CORPUS --> CLOUD_MOSS[("Moss cloud index<br/>MossRetriever")]
-    CORPUS --> COSINE[("index.json<br/>CosineRetriever fallback")]
   end
 
   subgraph EDGE["Edge runtime: Apple Silicon, local-first"]
@@ -60,8 +58,6 @@ flowchart LR
   end
 
   LOCAL_MOSS -->|"cold-start offline"| RETRIEVE
-  CLOUD_MOSS -. "load/auth online, query local while alive" .-> RETRIEVE
-  COSINE -. "deterministic fallback gate" .-> RETRIEVE
 
   OFF --> MIC
   LK --> MIC
