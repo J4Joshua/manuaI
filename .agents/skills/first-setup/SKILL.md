@@ -5,7 +5,7 @@ description: First-time setup of the ManuAI repo, from a fresh clone to a verifi
 
 # First-time setup — ManuAI
 
-Take a fresh clone to a **verified, running demo**. Do the steps in order; **STOP and fix if a verification fails.** Read `CLAUDE.md` first for the mental model. Target: macOS / Apple Silicon, Python 3.10–3.13.
+Take a fresh clone to a **verified, running demo**. Do the steps in order; **STOP and fix if a verification fails.** Read `AGENTS.md` first for the mental model. Target: macOS / Apple Silicon, Python 3.10–3.13.
 
 ## 0. Prereqs
 - `python3 --version` (3.10–3.13), `git --version`, `brew --version`. You should be in the repo root (it has `src/`, `requirements.txt`).
@@ -14,7 +14,7 @@ Take a fresh clone to a **verified, running demo**. Do the steps in order; **STO
 - ⚠ `brew install ollama` (the **formula**) ships WITHOUT the `llama-server` runner and cannot run models (`llama-server binary not found`). Use the cask:
   ```bash
   brew install --cask ollama && open -a Ollama   # starts the server on :11434
-  ollama pull qwen2.5:3b
+  ollama pull qwen2.5:3b && ollama pull nomic-embed-text
   ```
 - Verify: `curl -s localhost:11434/api/tags` lists both models.
 
@@ -24,10 +24,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 Pulls livekit-agents, mlx-whisper, kokoro-onnx, inferedge-moss, etc. (a few minutes).
 
-## 3. System tools (Homebrew)
+## 3. livekit-server (only for the wifi-ON browser demo)
 ```bash
-brew install ffmpeg portaudio   # ffmpeg = REQUIRED — mlx-whisper STT shells out to it (the offline_demo selftest in §7 fails without it: "No such file or directory: 'ffmpeg'"). portaudio = mic/speaker for sounddevice.
-brew install livekit            # provides `livekit-server` — only needed for the wifi-ON browser demo
+brew install livekit          # provides `livekit-server`
 ```
 
 ## 4. `.env`
@@ -37,20 +36,15 @@ cp .env.example .env
 Gotchas that will bite:
 - `WHISPER_MODEL` must end in `-mlx` → `mlx-community/whisper-small-mlx` (the bare name 404s).
 - Leave `HF_TOKEN` **blank** (an empty value sends a broken auth header → 401 even on public models; the code pops it).
-- `UNSILOED_API_KEY` is **optional** — only needed for Phase 4 PDF ingestion. No Moss cloud creds required.
+- `MOSS_PROJECT_ID/KEY` (from moss.dev) and `UNSILOED_API_KEY` are **optional** — the demo runs fully on the local stub without them.
 
-## 5. Build the local Moss index
+## 5. Build the local index
 ```bash
-.venv/bin/python src/moss_ingest.py     # -> data/moss_index.json (21 chunks from data/)
+.venv/bin/python src/ingest_local.py     # -> index.json (21 chunks from data/)
 ```
 
 ## 6. Voice models (download once, then offline)
-Whisper auto-downloads on first STT run. Kokoro does **not** auto-download — the voice scripts `sys.exit()` with a "download manually" message if the files are missing. Fetch them once (needs wifi):
-```bash
-mkdir -p models
-curl -L -o models/kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
-curl -L -o models/voices-v1.0.bin  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
-```
+Whisper auto-downloads on first STT run. Kokoro needs `models/kokoro-v1.0.onnx` + `models/voices-v1.0.bin` (the voice scripts fetch them on first run from the kokoro-onnx `model-files-v1.0` release; needs wifi once).
 
 ## 7. VERIFY — all must pass before declaring setup done
 ```bash
@@ -63,4 +57,4 @@ curl -L -o models/voices-v1.0.bin  https://github.com/thewh1teagle/kokoro-onnx/r
 - **Wifi-off:** `.venv/bin/python src/offline_demo.py` → open `http://localhost:8000`, press Enter, speak.
 - **Wifi-on:** `livekit-server --config livekit.offline.yaml` · `.venv/bin/python src/agent.py dev` · `.venv/bin/python src/server.py` → open `/operator.html`.
 
-If something fails, the **"Hard-won gotchas"** in `CLAUDE.md` cover the known traps; deep detail is in `docs/ARCHITECTURE.md`. Next: run `/dev-setup` for the development workflow.
+If something fails, the **"Hard-won gotchas"** in `AGENTS.md` cover the known traps; deep detail is in `docs/ARCHITECTURE.md`. Next: run `/dev-setup` for the development workflow.

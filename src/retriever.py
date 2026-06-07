@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Retriever seam (ARCHITECTURE.md §3c) — offline Moss-backed semantic search.
+"""Retriever seam (ARCHITECTURE.md §3c) — the Moss swap point.
+
+Both retrievers expose the SAME async interface so `core.answer()` is source-agnostic:
 
     async def search(self, question, machine_id, k=5) -> list[record]
     class attr  threshold: float | None
@@ -8,15 +10,22 @@ A `record` = chunk metadata + `text` + `score` (NO vector). Records have IDENTIC
     id, score(float), text, machine_id, sop_id, section, procedure_title,
     doc_type, page(None), safety_flag(bool), fault_codes(str)
 
-MossRetriever — disk-backed index (data/moss_index.json), Moss-embedded locally via
-PyEmbeddingService. Fully offline cold start. threshold=None (G15).
+- LocalMossRetriever — offline index at data/moss_index.json (Moss-embedded corpus).
+  threshold=None (G15). Primary path for server/agent/offline_demo.
+- CosineRetriever — legacy offline stub over index.json. threshold=0.30.
+- MossRetriever — sponsor-tech cloud path (load_index online, query local). threshold=None.
 """
 import asyncio
 import json
 import os
 from pathlib import Path
 
+import inferedge_moss as moss
 import moss_embed
+from inferedge_moss import QueryOptions
+
+from common import cosine, embed
+
 import paths
 
 
@@ -29,6 +38,14 @@ def load_env(path=None):
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
+
+
+def make_client():
+    load_env()
+    pid, key = os.environ.get("MOSS_PROJECT_ID"), os.environ.get("MOSS_PROJECT_KEY")
+    if not pid or not key:
+        raise SystemExit("MOSS_PROJECT_ID / MOSS_PROJECT_KEY missing from .env")
+    return moss.MossClient(pid, key)
 
 
 def _chunk_to_record(c: dict, score: float) -> dict:
@@ -47,10 +64,10 @@ def _chunk_to_record(c: dict, score: float) -> dict:
     }
 
 
-class MossRetriever:
+class LocalMossRetriever:
     """Offline retriever: cosine over data/moss_index.json (Moss-embedded corpus)."""
 
-    threshold = 0.30
+    threshold = None
 
     def __init__(self, index_path=None, model_id=None):
         path = Path(index_path) if index_path else paths.MOSS_INDEX_JSON
@@ -75,12 +92,36 @@ class MossRetriever:
         return scored[:k]
 
 
+class CosineRetriever:
+    """Offline stub: cosine over a local index.json built by ingest_local.py."""
+
+    threshold = 0.30
+
+    def __init__(self, index_path=None):
+        path = Path(index_path) if index_path else paths.INDEX_JSON
+        if not path.exists():
+            raise SystemExit(f"No {path.name} — run `.venv/bin/python src/ingest_local.py` first.")
+        with open(path) as f:
+            self.index = json.load(f)
+
+    async def search(self, question, machine_id, k=5):
+        qv = await asyncio.to_thread(embed, question, "query")
+        cands = [c for c in self.index if c.get("machine_id") in (machine_id, "all")] or self.index
+        scored = []
+        for c in cands:
+            rec = {k2: v for k2, v in c.items() if k2 != "vector"}
+            rec["score"] = float(cosine(qv, c["vector"]))
+            scored.append(rec)
+        scored.sort(key=lambda r: r["score"], reverse=True)
+        return scored[:k]
+
+
 class MossRetriever:
     """Sponsor-tech path: Moss top-k hybrid query (alpha=0.8). Lets Moss embed (raw
     text in). load_index is the ONE network step — do it ONLINE, keep the process
     alive, then queries run locally even with wifi off (ARCHITECTURE.md §12a / G14)."""
 
-    threshold = None  # Moss .score is per-query normalized — no usable absolute gate (G15)
+    threshold = None
 
     def __init__(self, client, index_name, alpha=0.8):
         self.client = client
@@ -111,10 +152,25 @@ class MossRetriever:
                 "section": md.get("section"),
                 "procedure_title": md.get("procedure_title") or md.get("title"),
                 "doc_type": md.get("doc_type"),
-                # page is stored at Unsiloed-ingest time (str, "" when unknown); parse
-                # it back to int|None so citations can surface "p.12" (Phase 4 DoD).
                 "page": int(md["page"]) if str(md.get("page", "")).strip().isdigit() else None,
                 "safety_flag": str(md.get("safety_flag")).lower() == "true",
                 "fault_codes": md.get("fault_codes", ""),
             })
         return out
+
+
+def make_retriever():
+    """Construct the offline local Moss retriever (requires data/moss_index.json)."""
+    load_env()
+    return LocalMossRetriever()
+
+
+def build_retriever(kind="local"):
+    """CLI helper: local (default) | stub | moss."""
+    load_env()
+    if kind == "stub":
+        return CosineRetriever()
+    if kind == "moss":
+        idx = os.getenv("MOSS_INDEX_NAME", "manuals")
+        return MossRetriever(make_client(), idx, alpha=float(os.getenv("MOSS_ALPHA", "0.8")))
+    return LocalMossRetriever()

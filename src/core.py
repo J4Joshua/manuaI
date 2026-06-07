@@ -84,6 +84,25 @@ def _escalated(question, machine_id, reason, top_score, threshold, corroboration
     }
 
 
+def _merge_hits(primary_hits: list, swarm) -> list:
+    """Primary Moss hits first, then swarm-prefetched chunks (deduped by id)."""
+    if not swarm:
+        return list(primary_hits)
+    seen = {h["id"] for h in primary_hits}
+    merged = list(primary_hits)
+    for h in swarm.get_hits():
+        if h["id"] not in seen:
+            merged.append(h)
+            seen.add(h["id"])
+    return merged
+
+
+async def _finish(state, swarm, question, primary_hits):
+    if swarm and primary_hits:
+        await swarm.after_answer(question, primary_hits)
+    return state
+
+
 async def _safe_search(chat_retriever, question, machine_id, k):
     """Chat retrieval is supplemental — a failure (index missing, network) must never
     break the authoritative answer. Returns [] on any error."""
@@ -109,32 +128,46 @@ def _corroboration(chat_hits, limit=3):
     return list(best.values())[:limit]
 
 
-async def answer(question, machine_id, retriever, k=5, chat_retriever=None):
+async def answer(
+    question,
+    machine_id,
+    retriever,
+    k=5,
+    chat_retriever=None,
+    swarm=None,
+):
     """retriever = the authoritative SOP/manual index (decides answered vs escalated).
     chat_retriever (optional) = the SECONDARY operator-chat index, queried in parallel:
     prior similar incidents that corroborate/guide the answer but never cite and never
-    flip a refusal (ARCHITECTURE.md §3d)."""
+    flip a refusal (ARCHITECTURE.md §3d).
+    swarm (optional) = background Moss context prefetch; supplemental chunks merged into
+    the LLM prompt after the primary retrieval."""
     threshold = retriever.threshold
 
     # Two simultaneous, source-separated retrievals: SOPs (authoritative) + chats (supplemental).
     if chat_retriever is not None:
-        hits, chat_hits = await asyncio.gather(
+        primary_hits, chat_hits = await asyncio.gather(
             retriever.search(question, machine_id, k),
             _safe_search(chat_retriever, question, machine_id, 3),
         )
     else:
-        hits, chat_hits = await retriever.search(question, machine_id, k), []
-    top_score = hits[0]["score"] if hits else 0.0
+        primary_hits, chat_hits = await retriever.search(question, machine_id, k), []
+
+    hits = _merge_hits(primary_hits, swarm)
+    top_score = primary_hits[0]["score"] if primary_hits else 0.0
     corroboration = _corroboration(chat_hits)
 
     # THRESHOLD GATE — deterministic, does NOT depend on the model OR on chats. Fires
     # only for the stub (threshold is a real number); Moss has threshold=None so it
     # always proceeds. Chats NEVER influence this decision.
-    if not hits or (threshold is not None and top_score < threshold):
-        return _escalated(
-            question, machine_id,
-            "No SOP matches closely enough to answer safely.",
-            top_score, threshold, corroboration,
+    if not primary_hits or (threshold is not None and top_score < threshold):
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                "No SOP matches closely enough to answer safely.",
+                top_score, threshold, corroboration,
+            ),
+            swarm, question, primary_hits,
         )
 
     # PRIMARY decision is SOP-ONLY (chats are NOT in this prompt) — so the answer-vs-escalate
@@ -146,10 +179,13 @@ async def answer(question, machine_id, retriever, k=5, chat_retriever=None):
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:
-        return _escalated(
-            question, machine_id,
-            "Model did not return valid JSON — retry, or check Ollama is running.",
-            top_score, threshold, corroboration,
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                "Model did not return valid JSON — retry, or check Ollama is running.",
+                top_score, threshold, corroboration,
+            ),
+            swarm, question, primary_hits,
         )
 
     # validate cited ⊆ retrieved (strip any surrounding brackets the model may emit)
@@ -158,10 +194,13 @@ async def answer(question, machine_id, retriever, k=5, chat_retriever=None):
              if str(i).strip("[]") in by_id]
 
     if out.get("escalate") or not cited or not out.get("answer"):
-        return _escalated(
-            question, machine_id,
-            out.get("answer") or "Could not ground an answer in the SOPs.",
-            top_score, threshold, corroboration,
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                out.get("answer") or "Could not ground an answer in the SOPs.",
+                top_score, threshold, corroboration,
+            ),
+            swarm, question, primary_hits,
         )
 
     # ---- ANSWERED — assemble from cited-chunk metadata (un-fakeable) ----
@@ -205,7 +244,7 @@ async def answer(question, machine_id, retriever, k=5, chat_retriever=None):
     if chat_hits:
         corroboration_note = await asyncio.to_thread(_verify_with_chats, out["answer"], chat_hits)
 
-    return {
+    state = {
         "question": question,
         "machine_id": machine_id,
         "status": "answered",
@@ -221,6 +260,7 @@ async def answer(question, machine_id, retriever, k=5, chat_retriever=None):
         "corroboration": corroboration,
         "corroboration_note": corroboration_note,
     }
+    return await _finish(state, swarm, question, primary_hits)
 
 
 def _verify_with_chats(answer_text, chat_hits):

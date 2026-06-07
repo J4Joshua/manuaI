@@ -98,6 +98,22 @@
     }
   }
 
+  var IDLE_STATE = {
+    question: "",
+    machine_id: "",
+    status: "idle",
+    answer: "",
+    citations: [],
+    steps_source: null,
+    steps: [],
+    safety_warnings: [],
+    safety_flag: false,
+    top_score: 0.0,
+    threshold: null,
+    source_excerpt: "",
+    context_bubble: { status: "idle", lines: [], updates: [], chunk_count: 0 },
+  };
+
   function setConn(state, text) {
     if (connDot) connDot.className = "conn-dot conn-" + state;
     if (connText) connText.textContent = text;
@@ -670,7 +686,78 @@
     }
   }
 
+  function updateContextBubble(s) {
+    var panelContext = document.getElementById("panel-context");
+    var contextList = document.getElementById("context-list");
+    var contextStatus = document.getElementById("context-status");
+    var contextUpdates = document.getElementById("context-updates");
+    var contextRefresh = document.getElementById("context-refresh-btn");
+    if (!panelContext) return;
+
+    var bubble = (s && s.context_bubble) || {};
+    var ctxLines = Array.isArray(bubble.lines) ? bubble.lines : [];
+    var ctxUpdates = Array.isArray(bubble.updates) ? bubble.updates : [];
+    var ctxStatus = bubble.status || "idle";
+    var busyContext = ctxStatus === "gathering" || ctxStatus === "refreshing";
+
+    if (ctxLines.length > 0 || ctxUpdates.length > 0 || busyContext) {
+      panelContext.hidden = false;
+      panelContext.classList.toggle("gathering", busyContext);
+      var contextStatusLabel = ctxStatus === "gathering"
+        ? "Moss swarm gathering related SOPs"
+        : (ctxStatus === "refreshing" ? "Refreshing Moss context"
+        : (ctxStatus === "ready" ? "Context ready" : "Background context"));
+      if (ctxStatus !== "gathering" && ctxStatus !== "refreshing" && bubble.chunk_count) {
+        contextStatusLabel += " - " + bubble.chunk_count + " chunks";
+      }
+      if (contextStatus) {
+        contextStatus.textContent = contextStatusLabel;
+        contextStatus.className = busyContext ? ctxStatus : "";
+      }
+      if (contextRefresh) contextRefresh.disabled = busyContext;
+      if (contextUpdates) {
+        contextUpdates.innerHTML = "";
+        ctxUpdates.slice(-4).reverse().forEach(function (up) {
+          var row = document.createElement("div");
+          row.className = "context-update";
+          row.title = up.query ? "Query: " + up.query : "";
+          var delta = document.createElement("span");
+          delta.className = "ctx-delta";
+          delta.textContent = up.summary || "";
+          var preview = document.createElement("span");
+          preview.className = "ctx-preview";
+          preview.textContent = up.preview || "";
+          row.appendChild(delta);
+          if (preview.textContent) row.appendChild(preview);
+          contextUpdates.appendChild(row);
+        });
+      }
+      if (contextList) {
+        contextList.innerHTML = "";
+        ctxLines.forEach(function (ln) {
+          var row = document.createElement("div");
+          row.className = "context-line";
+          var sop = document.createElement("span");
+          sop.className = "ctx-sop";
+          sop.textContent = ln.sop_id || "SOP";
+          var txt = document.createElement("span");
+          txt.className = "ctx-text";
+          txt.textContent = ln.text || "";
+          row.appendChild(sop);
+          row.appendChild(txt);
+          contextList.appendChild(row);
+        });
+      }
+    } else {
+      panelContext.hidden = true;
+      panelContext.classList.remove("gathering");
+      if (contextRefresh) contextRefresh.disabled = false;
+    }
+  }
+
   function applyScreenState(state) {
+    lastScreenState = state;
+    updateContextBubble(state);
     setMachine(state.machine_id);
     var status = state.status || "idle";
     if (status === "idle") return;
@@ -734,6 +821,7 @@
   var agentIdentity = null;
   var turnActive = false;
   var audioUnlocked = false;
+  var lastScreenState = IDLE_STATE;
 
   function isAgent(p) {
     try {
@@ -795,7 +883,7 @@
     log("Attached agent audio track");
   }
 
-  function rpc(method) {
+  function rpc(method, payload) {
     if (!room || !agentIdentity) {
       log("rpc(" + method + ") skipped: agent not ready", "error");
       return Promise.reject(new Error("agent not ready"));
@@ -804,7 +892,7 @@
       .performRpc({
         destinationIdentity: agentIdentity,
         method: method,
-        payload: "",
+        payload: payload || "",
       })
       .then(function (resp) {
         log("rpc " + method + " → " + resp);
@@ -1113,10 +1201,68 @@
       });
   }
 
+  function wireContextRefresh() {
+    var refreshBtn = document.getElementById("context-refresh-btn");
+    var machineSelect = document.getElementById("machine-select");
+    var askInput = document.getElementById("ask-input");
+    if (!refreshBtn) return;
+
+    function refreshViaHttp() {
+      var state = lastScreenState || IDLE_STATE;
+      var machine = state.machine_id ||
+        (machineSelect && machineSelect.value) ||
+        "cobot-cellA";
+      var q = state.question || (askInput && askInput.value.trim()) || "";
+      var url = "/context/refresh?machine=" + encodeURIComponent(machine);
+      if (q) url += "&q=" + encodeURIComponent(q);
+      return fetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.error) throw new Error(data.error);
+          updateContextBubble(data);
+          lastScreenState = data;
+          return data;
+        });
+    }
+
+    refreshBtn.addEventListener("click", function () {
+      var state = lastScreenState || IDLE_STATE;
+      var payload = JSON.stringify({ question: state.question || "" });
+      refreshBtn.disabled = true;
+
+      var refreshPromise = room && agentIdentity
+        ? rpc("refresh_context", payload)
+        : refreshViaHttp();
+
+      refreshPromise
+        .then(function (resp) {
+          if (typeof resp === "string") {
+            log("context refresh → " + resp);
+          } else {
+            log("context refresh → HTTP fallback");
+          }
+        })
+        .catch(function (e) {
+          log("context refresh failed: " + e, "error");
+          if (room && agentIdentity) {
+            return refreshViaHttp().catch(function (fallbackErr) {
+              log("context refresh fallback failed: " + fallbackErr, "error");
+            });
+          }
+        })
+        .finally(function () {
+          refreshBtn.disabled = false;
+        });
+    });
+  }
+
   function boot() {
     wireButton();
     wireTypedInput();
+    wireContextRefresh();
     wireDemoButton();
+    lastScreenState = IDLE_STATE;
+    updateContextBubble(IDLE_STATE);
 
     if (demoMode) {
       initDemo();

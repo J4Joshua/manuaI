@@ -114,6 +114,113 @@ html, body {
   border-radius: 999px; padding: 6px 14px; cursor: pointer; white-space: nowrap;
 }
 .demo-btn:hover { opacity: .9; }
+
+/* ── Moss context bubble ─────────────────────────────────────── */
+.context-wrap {
+  margin: 0 24px 12px;
+  background: var(--surface);
+  border: 1px solid rgba(59,130,246,.35);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(59,130,246,.06), var(--surface));
+}
+.context-wrap.gathering {
+  box-shadow: 0 0 0 1px rgba(59,130,246,.2), 0 0 24px var(--accent-glow);
+}
+.context-wrap > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  list-style: none;
+}
+.context-wrap > summary::-webkit-details-marker { display: none; }
+.context-wrap .context-body { padding: 0 14px 14px; }
+.context-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+#context-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .04em;
+}
+#context-status.gathering::after,
+#context-status.refreshing::after {
+  content: ' …';
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.context-refresh {
+  flex-shrink: 0;
+  border: 1px solid rgba(59,130,246,.3);
+  border-radius: 4px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.context-refresh:hover:not(:disabled) { border-color: var(--accent); }
+.context-refresh:disabled { opacity: .45; cursor: wait; }
+#context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.context-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.context-line .ctx-sop {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border: 1px solid rgba(59,130,246,.25);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.context-line .ctx-text { color: var(--text); }
+.context-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.context-update {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+.context-update .ctx-delta { flex-shrink: 0; color: var(--green); font-weight: 800; }
+.context-update .ctx-preview { font-family: var(--font-mono); font-size: 11px; word-break: break-word; }
+.context-empty { font-size: 13px; color: var(--text-dim); font-style: italic; }
+
 .cam-stage.demo-feed .cam-placeholder { background: linear-gradient(160deg, #121820 0%, #0a0e14 45%, #1a2433 100%); }
 .cam-stage.demo-feed .cam-placeholder::before {
   content: ""; position: absolute; inset: 18% 22% 28%; border: 2px dashed rgba(138,154,184,.35);
@@ -475,6 +582,18 @@ html, body {
   </main>
 
   <div class="bottom-stack">
+    <details id="panel-context" class="context-wrap" hidden>
+      <summary>Background context</summary>
+      <div class="context-body">
+        <div class="context-head">
+          <div id="context-status"></div>
+          <button id="context-refresh-btn" class="context-refresh" type="button">Refresh</button>
+        </div>
+        <div id="context-updates" class="context-updates"></div>
+        <div id="context-list"></div>
+      </div>
+    </details>
+
     <div class="fallback-bar">
       <input type="text" id="ask-input" placeholder="Type a question (R2 fallback)…" autocomplete="off" />
       <select id="machine-select" class="machine-select">

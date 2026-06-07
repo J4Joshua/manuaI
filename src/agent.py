@@ -122,7 +122,8 @@ from livekit.agents.utils.audio import combine_frames  # noqa: E402
 from livekit.plugins import openai as lk_openai  # noqa: E402
 from livekit.plugins import silero  # noqa: E402
 
-import core  # core.answer(question, machine_id, retriever) -> screen_state
+import core
+from context_swarm import get_swarm, with_bubble  # core.answer(question, machine_id, retriever) -> screen_state
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -349,7 +350,7 @@ def _make_retriever():
 # ManuAI voice agent — the only override is llm_node (the brain join-point).
 # ---------------------------------------------------------------------------
 class ManuAIAgent(Agent):
-    def __init__(self, machine_id: str, retriever) -> None:
+    def __init__(self, machine_id: str, retriever, swarm=None) -> None:
         super().__init__(
             instructions=(
                 "You are ManuAI, an offline voice assistant for factory operators. "
@@ -359,6 +360,15 @@ class ManuAIAgent(Agent):
         )
         self.machine_id = machine_id
         self.retriever = retriever
+        self.swarm = swarm
+        self._last_state: dict = {}
+
+    def _schedule_bubble_push(self, snap: dict) -> None:
+        if not self._last_state:
+            return
+        updated = {**self._last_state, "context_bubble": snap}
+        self._last_state = updated
+        asyncio.create_task(_publish_screen_state(updated))
 
     async def llm_node(
         self,
@@ -381,7 +391,11 @@ class ManuAIAgent(Agent):
         logger.info("llm_node: transcript=%r machine_id=%r", transcript, self.machine_id)
 
         # core.answer already runs the sync Ollama call via asyncio.to_thread (G9).
-        state = await core.answer(transcript, self.machine_id, self.retriever)
+        state = await core.answer(
+            transcript, self.machine_id, self.retriever, swarm=self.swarm
+        )
+        state = with_bubble(state, self.swarm)
+        self._last_state = state
         logger.info(
             "llm_node: status=%r top_score=%.3f answer=%r",
             state.get("status"),
@@ -490,7 +504,10 @@ async def entrypoint(ctx: agents.JobContext):
 
     retriever = _make_retriever()
     session = _build_session()
-    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=retriever)
+    swarm = get_swarm(MACHINE_ID, retriever)
+    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=retriever, swarm=swarm)
+    if swarm:
+        swarm.set_on_update(agent._schedule_bubble_push)
 
     await session.start(room=ctx.room, agent=agent)
 
@@ -527,6 +544,28 @@ async def entrypoint(ctx: agents.JobContext):
         await session.commit_user_turn()  # finalize audio -> STT -> llm_node -> TTS
         logger.info("[PTT] end_turn: committed")
         return "thinking"
+
+    @ctx.room.local_participant.register_rpc_method("refresh_context")
+    async def refresh_context(data: rtc.RpcInvocationData) -> str:
+        if not swarm:
+            return json.dumps({"status": "disabled", "chunk_count": 0})
+        try:
+            payload = json.loads(data.payload or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        question = (payload.get("question") or agent._last_state.get("question") or "").strip()
+        snap = await swarm.refresh(question or None)
+        state = {
+            **agent._last_state,
+            "machine_id": agent._last_state.get("machine_id") or MACHINE_ID,
+            "context_bubble": snap,
+        }
+        agent._last_state = state
+        await _publish_screen_state(state)
+        return json.dumps({
+            "status": snap.get("status"),
+            "chunk_count": snap.get("chunk_count", 0),
+        })
 
     @ctx.room.local_participant.register_rpc_method("cancel_turn")
     async def cancel_turn(data: rtc.RpcInvocationData) -> str:

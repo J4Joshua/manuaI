@@ -52,6 +52,7 @@ if not (os.environ.get("HF_TOKEN") or "").strip():
     os.environ.pop("HF_TOKEN", None)
 
 import core
+from context_swarm import empty_bubble, get_bg_runner, get_swarm, live_bubble_snapshot, with_bubble
 from render import render
 
 # ---------------------------------------------------------------------------
@@ -103,8 +104,20 @@ LATEST: dict = {
     "top_score": 0.0,
     "threshold": None,
     "source_excerpt": "",
+    "context_bubble": empty_bubble(),
 }
 _LATEST_LOCK = threading.Lock()
+_bg_runner = get_bg_runner()
+
+
+def _on_bubble_update(snap: dict) -> None:
+    global LATEST
+    with _LATEST_LOCK:
+        LATEST = {**LATEST, "context_bubble": snap}
+    n = snap.get("chunk_count", 0)
+    if n:
+        sops = sorted({ln.get("sop_id", "?") for ln in snap.get("lines", [])})
+        print(f"[context] {snap.get('status', '?')}: {n} chunk(s) — {', '.join(sops)}")
 
 
 def _set_latest(state: dict) -> None:
@@ -153,7 +166,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/state":
-            self._send_json(_get_latest())
+            state = _get_latest()
+            state = {
+                **state,
+                "context_bubble": live_bubble_snapshot(state.get("machine_id")),
+            }
+            self._send_json(state)
             return
 
         self.send_error(404)
@@ -202,12 +220,34 @@ def synth_to_wav(text: str, wav_path: str, voice: str = TTS_VOICE) -> str:
 
 
 def speak(text: str) -> None:
-    """Synthesise and play through the default output device (blocking)."""
+    """Synthesise and play through the default output device (blocking).
+
+    Releases PortAudio between mic capture and playback — on macOS AUHAL,
+    playing without sd.stop() after InputStream often yields PaErrorCode -9986
+    or a hung sd.wait() that blocks the next mic prompt.
+    """
     if not text.strip():
         return
+    sd.stop()
     samples, sample_rate = synth_to_numpy(text)
-    sd.play(samples, sample_rate)
-    sd.wait()
+    try:
+        sd.play(samples, sample_rate)
+        sd.wait()
+    except Exception as exc:
+        # Fallback: afplay avoids the PortAudio output stream entirely.
+        import subprocess
+        import tempfile
+
+        print(f"\n[tts] sounddevice playback failed ({exc}) — trying afplay…")
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                path = f.name
+            sf.write(path, samples, sample_rate)
+            subprocess.run(["afplay", path], check=True, timeout=120)
+        except Exception as exc2:
+            print(f"[tts] Could not play audio ({exc2}). Read the answer on screen.")
+    finally:
+        sd.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -296,18 +336,23 @@ def save_wav(audio: np.ndarray, path: str) -> None:
 # ---------------------------------------------------------------------------
 # Full STT → brain → TTS pipeline (shared by loop + selftest)
 # ---------------------------------------------------------------------------
-async def process_transcript(transcript: str, retriever) -> dict:
+async def process_transcript(transcript: str, retriever, swarm) -> dict:
     """Run core.answer and update LATEST. Returns the screen_state."""
-    state = await core.answer(transcript, MACHINE_ID, retriever)
+    state = await core.answer(transcript, MACHINE_ID, retriever, swarm=swarm)
+    state = with_bubble(state, swarm)
     _set_latest(state)
     return state
 
 
-def run_pipeline(transcript: str, retriever) -> dict:
+def run_pipeline(transcript: str, retriever, swarm) -> dict:
     """Sync wrapper: STT transcript → screen_state (updates LATEST + renders + speaks)."""
-    state = asyncio.run(process_transcript(transcript, retriever))
+    state = _bg_runner.run(process_transcript(transcript, retriever, swarm))
     render(state)
-    speak(state.get("answer") or "")
+    try:
+        speak(state.get("answer") or "")
+    except Exception as exc:
+        print(f"\n[tts] {exc} — read the answer on screen.")
+        sd.stop()
     return state
 
 
@@ -317,6 +362,7 @@ def run_pipeline(transcript: str, retriever) -> dict:
 def voice_loop() -> None:
     """The interactive demo loop. Runs until Ctrl-C."""
     retriever = make_retriever()
+    swarm = get_swarm(MACHINE_ID, retriever, _on_bubble_update)
 
     # Confirm a default input device exists (informational only — demo may still work).
     try:
@@ -369,9 +415,12 @@ def voice_loop() -> None:
         print(f"\n[stt] Heard: {transcript!r}")
 
         try:
-            run_pipeline(transcript, retriever)
+            run_pipeline(transcript, retriever, swarm)
         except Exception as exc:
             print(f"[brain] Error: {exc}")
+            sd.stop()
+
+        print("[mic] Ready — press Enter for another question.")
 
 
 # ---------------------------------------------------------------------------
