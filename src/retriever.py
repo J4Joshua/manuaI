@@ -1,31 +1,22 @@
 #!/usr/bin/env python3
-"""Retriever seam (ARCHITECTURE.md §3c) — the Moss swap point.
-
-Both retrievers expose the SAME async interface so `core.answer()` is source-agnostic:
+"""Retriever seam (ARCHITECTURE.md §3c) — Moss-backed semantic search.
 
     async def search(self, question, machine_id, k=5) -> list[record]
     class attr  threshold: float | None
 
-A `record` = chunk metadata + `text` + `score` (NO vector). Both retrievers return
-records with IDENTICAL keys:
+A `record` = chunk metadata + `text` + `score` (NO vector). Records have IDENTICAL keys:
     id, score(float), text, machine_id, sop_id, section, procedure_title,
     doc_type, page(None), safety_flag(bool), fault_codes(str)
 
-- CosineRetriever — the offline-bulletproof stub. threshold = 0.70 (raw nomic cosine
-  is non-normalized, so an absolute gate is meaningful). Loads index.json once.
-- MossRetriever  — the sponsor-tech path. threshold = None (Moss `.score` is per-query
-  normalized, so NO usable absolute gate exists — see ARCHITECTURE.md §12f / G15;
-  refusal on the Moss path comes from the LLM task-match few-shot, not a gate).
+MossRetriever — Moss top-k hybrid query (alpha=0.8). threshold = None (Moss `.score` is
+per-query normalized, so NO usable absolute gate exists — see ARCHITECTURE.md §12f / G15;
+refusal comes from the LLM task-match few-shot in core.py, not a gate).
 """
-import asyncio
-import json
 import os
 from pathlib import Path
 
 import inferedge_moss as moss
 from inferedge_moss import QueryOptions
-
-from common import cosine, embed
 
 import paths
 
@@ -49,41 +40,19 @@ def make_client():
     return moss.MossClient(pid, key)
 
 
-class CosineRetriever:
-    """Offline stub: cosine over a local index.json built by ingest_local.py.
-
-    Cold-loads from disk with zero network, ever — the bulletproof-offline path and
-    the backup-video engine (ARCHITECTURE.md §12a)."""
-
-    threshold = 0.70
-
-    def __init__(self, index_path=None):
-        path = Path(index_path) if index_path else paths.INDEX_JSON
-        if not path.exists():
-            raise SystemExit(f"No {path.name} — run `.venv/bin/python src/ingest_local.py` first.")
-        with open(path) as f:
-            self.index = json.load(f)
-
-    async def search(self, question, machine_id, k=5):
-        # Embed the query LOCALLY (nomic) off the event loop — the sync urllib call
-        # would otherwise block LiveKit's async loop (G9).
-        qv = await asyncio.to_thread(embed, question, "query")
-        # metadata filter: this machine's docs + global ("all") policies; fall back to
-        # the whole index only if the filter is empty (G10 — fine at this corpus size).
-        cands = [c for c in self.index if c.get("machine_id") in (machine_id, "all")] or self.index
-        scored = []
-        for c in cands:
-            rec = {k2: v for k2, v in c.items() if k2 != "vector"}
-            rec["score"] = float(cosine(qv, c["vector"]))
-            scored.append(rec)
-        scored.sort(key=lambda r: r["score"], reverse=True)
-        return scored[:k]
+def make_moss_retriever(client=None, index_name=None, alpha=None):
+    """Construct a MossRetriever from .env (or explicit args)."""
+    client = client or make_client()
+    index_name = index_name or os.environ.get("MOSS_INDEX_NAME", "manuals")
+    if alpha is None:
+        alpha = float(os.environ.get("MOSS_ALPHA", "0.8"))
+    return MossRetriever(client, index_name, alpha=alpha)
 
 
 class MossRetriever:
-    """Sponsor-tech path: Moss top-k hybrid query (alpha=0.8). Lets Moss embed (raw
-    text in). load_index is the ONE network step — do it ONLINE, keep the process
-    alive, then queries run locally even with wifi off (ARCHITECTURE.md §12a / G14)."""
+    """Moss top-k hybrid query (alpha=0.8). Lets Moss embed (raw text in).
+    load_index is the ONE network step — do it ONLINE, keep the process alive, then
+    queries run locally even with wifi off (ARCHITECTURE.md §12a / G14)."""
 
     threshold = None  # Moss .score is per-query normalized — no usable absolute gate (G15)
 

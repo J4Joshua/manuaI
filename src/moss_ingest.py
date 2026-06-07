@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Build the REAL Moss index from the shared corpus chunker (corpus.build_chunks),
-so the stub (index.json) and Moss hold IDENTICAL content + ids + metadata.
+"""Build the Moss index from the shared corpus chunker (corpus.build_chunks).
 
 Online — create_index builds in the cloud (ARCHITECTURE.md §12a). Run with wifi ON:
     .venv/bin/python src/moss_ingest.py

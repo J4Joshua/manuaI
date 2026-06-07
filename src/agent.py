@@ -8,7 +8,7 @@ ARCHITECTURE
                                                   ↓
                          data channel (topic "screen_state") → Phase 2 screen.html
 
-The BRAIN is ``core.answer``: it retrieves SOPs (CosineRetriever, offline), gates,
+The BRAIN is ``core.answer``: it retrieves SOPs (MossRetriever), gates,
 calls Ollama (qwen2.5:3b), and returns a complete ``screen_state`` dict
 (ARCHITECTURE.md §3b). We intercept the LiveKit LLM step via ``Agent.llm_node`` and
 run ``core.answer`` there — no external LLM ever produces the spoken answer.
@@ -90,7 +90,7 @@ import numpy as np
 # Load .env BEFORE importing anything that reads env-vars (reuse retriever's
 # stdlib-only loader — no python-dotenv needed; it is os.environ.setdefault).
 # ---------------------------------------------------------------------------
-from retriever import CosineRetriever, MossRetriever, make_client, load_env
+from retriever import make_moss_retriever, load_env
 
 load_env()
 
@@ -146,9 +146,6 @@ LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "devkey")
 LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "secret")
 
 MACHINE_ID = os.environ.get("MACHINE_ID", "labeler-line3")
-
-# Retriever selection: stub (CosineRetriever, offline-bulletproof) or moss.
-RETRIEVER_ENV = os.environ.get("RETRIEVER", "stub").strip().lower()
 
 # STT — local mlx-whisper (in-process; no HTTP server).
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-small")
@@ -342,15 +339,8 @@ class KokoroChunkedStream(tts_mod.ChunkedStream):
 # Retriever factory (constructed once per session, reused across turns)
 # ---------------------------------------------------------------------------
 def _make_retriever():
-    if RETRIEVER_ENV == "moss":
-        logger.info("Retriever: Moss (load_index runs on first search; keep wifi ON)")
-        client = make_client()
-        index_name = os.environ.get("MOSS_INDEX_NAME", "manuals")
-        return MossRetriever(client, index_name)
-    if RETRIEVER_ENV != "stub":
-        logger.warning("Unknown RETRIEVER=%r; falling back to stub", RETRIEVER_ENV)
-    logger.info("Retriever: CosineRetriever (offline-bulletproof, disk-local)")
-    return CosineRetriever()
+    logger.info("Retriever: Moss (load_index runs on first search; keep wifi ON)")
+    return make_moss_retriever()
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +482,8 @@ async def entrypoint(ctx: agents.JobContext):
     """One operator session: build retriever + session, start in the room, wire
     push-to-talk RPCs, greet."""
     logger.info(
-        "Session starting: room=%r machine_id=%r retriever=%r",
-        ctx.room.name, MACHINE_ID, RETRIEVER_ENV,
+        "Session starting: room=%r machine_id=%r retriever=moss",
+        ctx.room.name, MACHINE_ID,
     )
 
     retriever = _make_retriever()
@@ -561,7 +551,7 @@ def _check() -> int:
     print(f"  VAD  : {type(vad).__name__} OK")
     session = _build_session()
     print(f"  SESSION: {type(session).__name__} (turn_handling=manual) OK")
-    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=CosineRetriever())
+    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=make_moss_retriever())
     print(f"  AGENT: {type(agent).__name__} (machine_id={MACHINE_ID!r}) OK")
     # Confirm the AgentServer constructed and is bound to the local URL.
     print(f"  SERVER: {type(server).__name__} ws_url={LIVEKIT_URL!r} OK")
