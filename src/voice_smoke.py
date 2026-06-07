@@ -33,7 +33,7 @@ import numpy as np
 import soundfile as sf
 
 # Load .env (stdlib-only loader from retriever) so WHISPER_MODEL / TTS_VOICE etc. apply.
-from retriever import CosineRetriever, load_env
+from retriever import CosineRetriever, MossRetriever, load_env, make_client
 
 load_env()
 
@@ -152,9 +152,35 @@ async def round_trip(label: str, utterance: str, retriever) -> dict:
     return state
 
 
+def _make_retriever():
+    """Voice retriever, env-selected (mirrors agent.py / ask.py). Default stub
+    (offline, SOPs-only index.json); RETRIEVER=moss uses the Moss `manuals` index
+    (SOPs + the ingested OEM manuals) — keep wifi ON, load_index is a network call (G14)."""
+    kind = os.environ.get("RETRIEVER", "stub").strip().lower()
+    if kind == "moss":
+        idx = os.environ.get("MOSS_INDEX_NAME", "manuals")
+        print(f"[retriever] Moss '{idx}' (wifi-ON; load_index runs on first search)")
+        return MossRetriever(make_client(), idx, alpha=float(os.environ.get("MOSS_ALPHA", "0.8")))
+    print("[retriever] CosineRetriever (offline stub, index.json — SOPs only)")
+    return CosineRetriever()
+
+
 def main() -> int:
     MODELS.mkdir(exist_ok=True)
-    retriever = CosineRetriever()
+    retriever = _make_retriever()
+
+    # Custom mode: any utterance on the CLI runs ONE full voice round-trip
+    # (Kokoro TTS → mlx-whisper STT → core.answer → TTS) so you can exercise the manual
+    # through the real voice pipeline, e.g.:
+    #   RETRIEVER=moss MACHINE_ID=cobot-cellA voice_smoke.py "C33 calibration flash checksum failed"
+    if len(sys.argv) > 1:
+        utterance = " ".join(sys.argv[1:])
+        state = asyncio.run(round_trip("CUSTOM", utterance, retriever))
+        cites = [c.get("sop_id") for c in state.get("citations", [])]
+        print(f"\n=== RESULT  (machine={MACHINE_ID})  ===")
+        print(f"status : {state.get('status')!r}   cites={cites or '-'}")
+        print(f"spoken : {state.get('answer')!r}")
+        return 0
 
     jam_state = asyncio.run(round_trip("JAM (covered → answered)", JAM_UTTERANCE, retriever))
     bypass_state = asyncio.run(
