@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0515-unlabelled-product",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-05-15",
+  "topic": "Line 3 UNLABELLED PRODUCT rejects",
+  "messages": [
+    {
+      "user": "maria.ops",
+      "ts": "15:10",
+      "text": "line 3 throwing UNLABELLED PRODUCT and kicking parts to reject"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "15:12",
+      "text": "the product detect saw a product but no label got placed - missed apply. check label supply, peel tip threading, and the apply timing/photocell"
+    },
+    {
+      "user": "maria.ops",
+      "ts": "15:16",
+      "text": "labels are fine but the apply photocell was nudged out of alignment"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "15:17",
+      "text": "realign the product photocell to the apply point and re-run the apply delay so the label lands on the product, not the gap"
+    },
+    {
+      "user": "maria.ops",
+      "ts": "15:29",
+      "text": "realigned, apply timing retuned, rejects stopped"
+    }
+  ]
+}

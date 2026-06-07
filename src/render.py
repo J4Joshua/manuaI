@@ -15,6 +15,21 @@ def _thr(state):
     return "n/a" if t is None else f"{t:.2f}"
 
 
+def _corroboration(state):
+    """Supplemental panel: prior operator incidents (the `chats` index). Additive —
+    never a citation; shown beneath the SOP-grounded answer / escalation."""
+    corr = state.get("corroboration") or []
+    if not corr:
+        return
+    print("-" * W)
+    print("  [prior incidents]  (operator chats — corroboration only, not a citation)")
+    note = state.get("corroboration_note")
+    if note:
+        print(f"      ✓ {note}")
+    for c in corr:
+        print(f"      · {c['chat_id']} (match {c.get('score', 0):.2f}) — {c.get('summary','')}")
+
+
 def render(state):
     print()
     print(f'[mic] Operator: "{state["question"]}"   [machine: {state["machine_id"]}]')
@@ -29,6 +44,7 @@ def render(state):
         print("=" * W)
         print(f"  {state['answer']}")
         print("  Supervisor flagged. Do not improvise on safety-critical steps.")
+        _corroboration(state)
         print("=" * W)
         print()
         return
@@ -78,5 +94,6 @@ def render(state):
             sop = ln.get("sop_id", "?")
             print(f"      {sop}  {ln.get('text', '')}")
 
+    _corroboration(state)
     print("=" * W)
     print()

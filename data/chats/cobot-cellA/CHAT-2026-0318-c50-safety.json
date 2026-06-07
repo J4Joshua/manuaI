@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0318-c50-safety",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-03-18",
+  "topic": "Cell A cobot C50 safety fault",
+  "messages": [
+    {
+      "user": "tomas.ops",
+      "ts": "09:45",
+      "text": "cobot dropped to a protective stop with C50"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "09:47",
+      "text": "C50 is in the safety system range - a safety-rated signal tripped. check the safety I/O: e-stop loop, safeguard/light curtain, and the door interlock on the cell"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "09:50",
+      "text": "the cell guard door was cracked open by the pallet"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "09:51",
+      "text": "that's your safeguard stop. close and latch the door, acknowledge the safeguard reset, then clear the protective stop per SOP-2201. don't defeat the interlock"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "10:01",
+      "text": "closed the door, reset safeguard, cleared, running again"
+    }
+  ]
+}

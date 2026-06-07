@@ -1,67 +1,48 @@
 #!/usr/bin/env python3
-"""Phase 4 — Unsiloed ingestion (ARCHITECTURE.md §4b).
+"""Unsiloed ingestion — ANY SOP/PDF → Unsiloed Parse + Extract + chunk → Moss.
 
-Pipeline (Unsiloed cloud + one-time, wifi ON for PDF parse only):
-    real manual PDFs  →  Unsiloed Parse (HTTP, async-poll)
-                      →  Unsiloed Extract (custom JSON schema, per-chunk)
-                      →  normalize → corpus.py chunk schema
-                      →  moss_ingest.embed_and_write (SOP + PDF union, offline Moss embed)
+Unsiloed does ALL of the work that turns a raw document into indexable records:
+  • PARSE   (POST /parse)      — layout/OCR → ordered, typed segments + Markdown
+  • CHUNK   (Parse `chunks[]`) — Unsiloed groups adjacent segments into chunks; we
+                                 take each Unsiloed chunk as ONE record (we never
+                                 re-chunk — chunk boundaries are Unsiloed's).
+  • EXTRACT (POST /v2/extract) — schema-driven structured fields (title, error
+                                 codes, safety) with confidence scores.
+Then we normalize each chunk to the §3a corpus schema and load the whole set into
+Moss (alongside the authored .md SOP chunks). This is the one-time, wifi-ON,
+off-the-query-path ingestion step (ARCHITECTURE.md §4b, §12).
+
+Endpoints below are VERIFIED live (2026-06-06) against the real API — they differ
+from the published docs in a few places (noted inline):
+  • parse  status == "Succeeded"; result.chunks[] = [{chunk_id, embed, segments[]}]
+  • extract status == "completed"; result[field] = {value, score:{grounding_score,
+    extraction_score}, page_no?, bboxes?}  (score is an OBJECT, not a float)
 
 Usage:
-    .venv/bin/python src/unsiloed_ingest.py [--dry-run] [--pdf path/to/manual.pdf]
+    .venv/bin/python src/unsiloed_ingest.py                      # all data/machines/*/manuals/*.pdf
+    .venv/bin/python src/unsiloed_ingest.py FILE_OR_DIR ...      # specific PDFs / folders of PDFs
+    .venv/bin/python src/unsiloed_ingest.py --machine cobot-cellA some.pdf
+    .venv/bin/python src/unsiloed_ingest.py --pages 1-10 big.pdf # limit pages (credits ≈ 5/page)
+    .venv/bin/python src/unsiloed_ingest.py --dry-run ...        # parse+extract+normalize, print, DON'T touch Moss
+    .venv/bin/python src/unsiloed_ingest.py --no-sops ...        # index ONLY the Unsiloed chunks (omit authored SOPs)
+    .venv/bin/python src/unsiloed_ingest.py --json-out FILE ...  # also dump normalized chunks as JSON
 
-    --dry-run   Normalise chunks and print stats; skip local Moss index build.
-    --pdf       Process a single PDF instead of all manuals.
-    (no args)   Process every data/machines/*/manuals/*.pdf in manifest.
-
-Env vars (from .env / .env.example):
-    UNSILOED_API_KEY       required (except --dry-run)
-    UNSILOED_BASE_URL      default https://prod.visionapi.unsiloed.ai
-    MOSS_MODEL_ID          default moss-minilm (local embedder, offline)
-
-Imports: stdlib only for HTTP (urllib) + project-local corpus / moss_ingest.
+Env (.env): UNSILOED_API_KEY (required), UNSILOED_BASE_URL, MOSS_PROJECT_ID/KEY,
+MOSS_INDEX_NAME (default "manuals"), MOSS_MODEL_ID (default "moss-minilm").
 """
+from __future__ import annotations
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Field-mapping table (Phase 4 / ARCHITECTURE §3a / G12)
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# corpus.py schema field  | Unsiloed source                            | Default / derivation
-# ──────────────────────────────────────────────────────────────────────────────────────────
-# id                      | f"{doc_id}--{i:03d}--{slug(section_heading)}" | ordinal prefix guarantees
-#                         |                                            | uniqueness across headerless
-#                         |                                            | chunks; parse-order stable
-# sop_id                  | doc_id from manifest (str)                 | str(doc_id)
-# section                 | SectionHeader / Title segment text         | "Overview" fallback
-# machine_id              | manifest lookup by PDF path                | never auto-detected (G12)
-# doc_type                | manifest "type" field                      | "manual"
-# procedure_title         | Extract field "procedure_title"            | sop_id if Extract absent
-# safety_flag (bool)      | Extract "safety_flag" (conf≥0.7)          | True if:
-#                         |                                            |   • Extract conf < 0.7, OR
-#                         |                                            |   • text ∋ WARNING/CAUTION/
-#                         |                                            |     DANGER/LOTO, OR
-#                         |                                            |   • manifest doc safety_flag
-# fault_codes (str)       | Extract "error_codes[]" → ",".join()      | "" (empty string)
-# page (int)              | segment["page_number"] (first segment)     | None
-# text                    | f"{procedure_title}\n\n{chunk_markdown}"   | same pattern as corpus.py
-#
-# Steps (from Extract) are FOLDED INTO text via the parsed markdown — they are NOT
-# stored as a separate key (corpus.py has no `steps` key). The schema has exactly
-# 10 keys: id, sop_id, section, machine_id, doc_type, procedure_title, safety_flag,
-# fault_codes, page, text.
-# ─────────────────────────────────────────────────────────────────────────────
-
+import argparse
+import asyncio
 import json
 import os
 import re
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
-# Project-local imports (see requirements.txt).
+import requests
+
 import corpus
 import paths
 from moss_ingest import embed_and_write
@@ -69,344 +50,256 @@ from retriever import load_env
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-# Safety keywords that force safety_flag=True regardless of Extract confidence.
+_POLL_INTERVAL = 4       # seconds between status polls
+# 10 min default per document; big manuals OCR slowly — override via env for large docs.
+_POLL_TIMEOUT = int(os.getenv("UNSILOED_POLL_TIMEOUT", "600"))
+_CREDITS_PER_PAGE = 5    # observed; for the cost estimate only
+
+# Force safety_flag=True when a chunk's text trips any of these (a wrong "safe"
+# is a worker-injury risk → fail safe). Mirrors the gate in core/render.
 _SAFETY_RE = re.compile(
-    r"\b(WARNING|CAUTION|DANGER|LOTO|LOCKOUT|TAGOUT|HAZARD|DO NOT)\b",
+    r"\b(WARNING|CAUTION|DANGER|NOTICE|LOTO|LOCK\s?OUT|TAG\s?OUT|HAZARD|"
+    r"DO NOT|E-?STOP|EMERGENCY STOP|ELECTRICAL SHOCK|PINCH POINT)\b",
     re.IGNORECASE,
 )
 
-# Extract job poll interval (seconds) and timeout.
-_POLL_INTERVAL = 5      # seconds between GET /parse/{job_id} calls
-_POLL_TIMEOUT  = 360    # 6 minutes max per document
+# Document-level extraction schema (JSON Schema). Unsiloed Extract is per-DOCUMENT,
+# so these describe the whole file; per-chunk fields (section, page) come from Parse,
+# and doc-level error_codes are distributed to the chunks whose text contains them.
+EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "document_title": {
+            "type": "string",
+            "description": "The title or name of this manual / SOP / procedure document.",
+        },
+        "equipment_name": {
+            "type": "string",
+            "description": "The machine, equipment, or model this document is about (e.g. 'Label-Aire 3115NV', 'Universal Robots UR20').",
+        },
+        "error_codes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Every fault, alarm, or error code mentioned anywhere in the document, verbatim (e.g. 'E-42', 'C4', 'C50').",
+        },
+        "has_safety_warnings": {
+            "type": "boolean",
+            "description": "True if the document contains any safety warning, caution, danger notice, lockout/tagout instruction, or personal-injury hazard.",
+        },
+    },
+    "required": ["document_title"],
+    "additionalProperties": False,
+}
 
-# Intentional-gap query topics from manifest.json.  Their ABSENCE in the corpus
-# is what triggers the escalation beat — do NOT ingest documents that would
-# answer them.  The PDFs listed in the manifest are real OEM manuals that
-# discuss safety guards and soft-limits, but none of the 3 PDFs is itself an
-# "intentional gap document" — the gaps are specific *query topics*, not doc
-# paths.  This constant is a forward-looking guard: if future PDFs are added
-# whose sole purpose is to cover these topics, skip them here.
-_INTENTIONAL_GAP_KEYWORDS = frozenset({
-    "bypass",
-    "interlock",
-    "disable",
-    "widen",
-    "safeguard stop",
-})
+# Confidence floor: below this, fall back to conservative defaults (G12).
+_CONF_FLOOR = 0.3
 
-# ── Env / configuration helpers ───────────────────────────────────────────────
 
-def _require_api_key():
-    """Exit with a helpful message if UNSILOED_API_KEY is not set."""
+# ── Config helpers ────────────────────────────────────────────────────────────
+
+def _require_api_key() -> str:
     key = os.environ.get("UNSILOED_API_KEY", "").strip()
     if not key:
-        print(
-            "\n[unsiloed_ingest] UNSILOED_API_KEY is not set.\n"
+        sys.exit(
+            "UNSILOED_API_KEY is not set.\n"
             "  1. Get a key at https://unsiloed.ai (or support@unsiloed.ai).\n"
-            "  2. Add it to your .env:  UNSILOED_API_KEY=<your-key>\n"
-            "  3. Re-run this script with wifi ON.\n\n"
-            "Tip: pass --dry-run to normalise without calling Unsiloed.\n",
-            file=sys.stderr,
+            "  2. Put it in .env:  UNSILOED_API_KEY=<your-key>\n"
         )
-        sys.exit(1)
     return key
 
 
-def _base_url():
+def _base_url() -> str:
     return os.environ.get("UNSILOED_BASE_URL", "https://prod.visionapi.unsiloed.ai").rstrip("/")
 
 
-# ── Manifest helpers ──────────────────────────────────────────────────────────
+def _headers(api_key: str) -> dict:
+    return {"api-key": api_key}
 
-def _load_manifest():
-    """Return the parsed manifest.json dict."""
+
+# ── Document metadata resolution (works WITHOUT the manifest) ──────────────────
+
+def _load_manifest_index() -> dict:
+    """Optional enrichment: {relative_path: doc_dict} from data/manifest.json.
+    Absent/unreadable manifest is fine — metadata is then derived from the path."""
     p = paths.DATA / "manifest.json"
-    with open(p) as f:
-        return json.load(f)
-
-
-def _build_path_index(manifest):
-    """Return {relative_path_str: doc_dict} keyed by manifest doc["path"]."""
-    return {d["path"]: d for d in manifest["documents"]}
-
-
-def _find_pdfs():
-    """Glob all OEM manuals under data/machines/*/manuals/*.pdf."""
-    return sorted(paths.DATA.glob("machines/*/manuals/*.pdf"))
-
-
-def _manifest_doc_for_pdf(pdf_path, path_index):
-    """
-    Look up a PDF in the manifest path index.
-    pdf_path is an absolute Path; we match against the manifest's relative paths
-    (which are relative to data/).  Returns the manifest document dict, or None.
-    Handles --pdf paths outside data/ gracefully (ValueError → None → skip).
-    """
     try:
-        rel = str(pdf_path.relative_to(paths.DATA))
+        docs = json.loads(p.read_text()).get("documents", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {d.get("path"): d for d in docs if d.get("path")}
+
+
+def _slug(text: str) -> str:
+    """Slug a heading the same way corpus.py does."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", text or "").strip("-") or "sec"
+
+
+def resolve_doc_meta(pdf_path: Path, manifest_index: dict, machine_arg: str | None) -> dict:
+    """Resolve {sop_id, machine_id, doc_type, manifest_safety} for ANY file.
+
+    Order: manifest (by path under data/) → path pattern machines/<id>/<type>/ →
+    --machine arg → 'all'. doc_id defaults to a stable slug of the filename stem so
+    ingestion works on files that were never registered in the manifest."""
+    rel = None
+    try:
+        rel = str(pdf_path.resolve().relative_to(paths.DATA))
     except ValueError:
-        # Path is outside data/ — cannot be in the manifest.
-        return None
-    return path_index.get(rel)
+        rel = None
+
+    doc = manifest_index.get(rel) if rel else None
+    if doc:
+        return {
+            "sop_id": str(doc["doc_id"]),
+            "machine_id": str(doc.get("machine_id") or machine_arg or "all"),
+            "doc_type": str(doc.get("type", "manual")),
+            "manifest_safety": bool(doc.get("safety_flag", False)),
+        }
+
+    # Not in the manifest — derive from the path / args.
+    machine_id = machine_arg or "all"
+    doc_type = "manual"
+    m = re.search(r"machines/([^/]+)/(manuals|sops|reference)/", str(pdf_path).replace("\\", "/"))
+    if m:
+        machine_id = machine_arg or m.group(1)
+        doc_type = {"manuals": "manual", "sops": "sop", "reference": "reference"}[m.group(2)]
+    return {
+        "sop_id": _slug(pdf_path.stem).upper(),
+        "machine_id": machine_id,
+        "doc_type": doc_type,
+        "manifest_safety": False,
+    }
 
 
-# ── Slug helper (mirrors corpus.py exactly) ───────────────────────────────────
+# ── Unsiloed PARSE (chunking happens here, server-side) ────────────────────────
 
-def _slug(text):
-    """Slug a section heading the same way corpus.py does."""
-    return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-") or "sec"
-
-
-# ── Safety-flag derivation (G12) ─────────────────────────────────────────────
-
-def _derive_safety_flag(text, extract_safety, extract_confidence, manifest_safety):
-    """
-    Return True (safe-default) when any of:
-      • manifest doc has safety_flag: true
-      • Extract confidence < 0.7 (uncertain extraction → err on the side of safety)
-      • text contains WARNING / CAUTION / DANGER / LOTO keywords
-    Otherwise trust Extract's boolean value.
-
-    NOTE: when extract_safety is None (no Extract result), this returns True —
-    fail-safe for procedure chunks whose safety status is unknown.
-    """
-    if manifest_safety:
-        return True
-    if _SAFETY_RE.search(text or ""):
-        return True
-    if extract_confidence is None or extract_confidence < 0.7:
-        return True
-    return bool(extract_safety)
-
-
-# ── HTTP helpers (stdlib urllib only — no `requests`) ────────────────────────
-
-def _http_get(url, headers):
-    """Blocking GET → parsed JSON body."""
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read().decode())
-
-
-def _http_post_multipart(url, headers, fields, file_field, file_name, file_bytes):
-    """
-    Blocking multipart/form-data POST for the Unsiloed /parse endpoint.
-    `fields` is {str: str} for text params; file_bytes is the raw PDF bytes.
-    Returns parsed JSON body.
-    """
-    boundary = "ManuAIBoundary01"
-    body_parts = []
-
-    for name, value in fields.items():
-        body_parts.append(
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
-            f"{value}\r\n"
+def parse_document(pdf_path: Path, api_key: str, base_url: str, pages: str | None = None) -> dict:
+    """POST /parse (multipart) → poll GET /parse/{job_id} until Succeeded.
+    Returns the completed result dict (carries `chunks[]` — the Unsiloed chunking)."""
+    # High-res + table-merge are tuned for photographed/scanned factory SOPs. They are
+    # pure overhead on native-text PDFs (e.g. a 167-page error-code directory), where they
+    # make Unsiloed's segment-validation stage extremely slow. Override per-doc via env.
+    data = {
+        "ocr_strategy": os.getenv("UNSILOED_OCR_STRATEGY", "auto_detection"),  # force_ocr for photographed SOPs
+        "use_high_resolution": os.getenv("UNSILOED_HIGH_RES", "true"),         # set false for native-text docs
+        "merge_tables": os.getenv("UNSILOED_MERGE_TABLES", "true"),            # keep cross-page spec tables whole
+        "export_format": '["markdown","json"]',
+        "output_fields": '{"markdown": true, "content": true, "bbox": true, "confidence": true}',
+    }
+    if pages:
+        data["page_range"] = pages
+    with open(pdf_path, "rb") as f:
+        r = requests.post(
+            f"{base_url}/parse",
+            headers=_headers(api_key),
+            files={"file": (pdf_path.name, f, "application/pdf")},
+            data=data,
+            timeout=120,
         )
-    # File field
-    body_parts.append(
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{file_field}"; filename="{file_name}"\r\n'
-        "Content-Type: application/pdf\r\n\r\n"
-    )
-    body = (
-        "".join(body_parts).encode()
-        + file_bytes
-        + f"\r\n--{boundary}--\r\n".encode()
-    )
-    req_headers = {
-        **headers,
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "Content-Length": str(len(body)),
-    }
-    req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read().decode())
-
-
-def _http_post_json(url, headers, payload):
-    """Blocking JSON POST → parsed JSON body."""
-    data = json.dumps(payload).encode()
-    req_headers = {**headers, "Content-Type": "application/json"}
-    req = urllib.request.Request(url, data=data, headers=req_headers, method="POST")
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read().decode())
-
-
-# ── Unsiloed Parse (step 1) ───────────────────────────────────────────────────
-
-# TODO(needs-api-key): _parse_pdf submits the real multipart POST and polls
-# until Succeeded.  No API call is made here at import time.
-
-def _submit_parse(pdf_path, api_key, base_url):
-    """
-    Submit one PDF to POST /parse and return the job_id.
-
-    Parameters chosen per SKILL.md / reference.md:
-      • merge_tables=true    — reconnect cross-page spec tables (torque specs etc.)
-      • use_high_resolution  — better OCR on factory scans
-      • output_fields        — markdown + content + bbox + confidence (enough for §3a)
-      • export_format        — markdown + json (JSON drives chunk boundaries; Markdown is text)
-      • ocr_strategy         — auto_detection (switch to force_ocr for photographed SOPs)
-
-    # TODO(needs-api-key): This makes a live network call to Unsiloed.
-    """
-    headers = {"api-key": api_key}
-    fields = {
-        "ocr_strategy":       "auto_detection",
-        "use_high_resolution": "true",
-        "merge_tables":        "true",
-        "export_format":       '["markdown","json"]',
-        "output_fields":       '{"markdown": true, "content": true, "bbox": true, "confidence": true}',
-    }
-    file_bytes = pdf_path.read_bytes()
-    url = f"{base_url}/parse"
-    print(f"  → POST {url} ({pdf_path.name}, {len(file_bytes)//1024} KB)")
-    result = _http_post_multipart(
-        url, headers, fields,
-        file_field="file",
-        file_name=pdf_path.name,
-        file_bytes=file_bytes,
-    )
-    job_id = result.get("job_id")
+    r.raise_for_status()
+    sub = r.json()
+    job_id = sub.get("job_id")
     if not job_id:
-        raise RuntimeError(f"Unsiloed /parse did not return job_id: {result}")
-    print(f"     job_id={job_id!r}  status={result.get('status')!r}")
-    return job_id
+        raise RuntimeError(f"/parse returned no job_id: {sub}")
+    print(f"  parse  job={job_id}  credits_used={sub.get('credit_used')}  quota_left={sub.get('quota_remaining')}")
+    return _poll(f"{base_url}/parse/{job_id}", api_key, ok={"succeeded"}, what="parse")
 
 
-def _poll_parse(job_id, api_key, base_url):
-    """
-    Poll GET /parse/{job_id} until Succeeded or Failed (or timeout).
-    Returns the completed result dict (which contains `chunks`).
+# ── Unsiloed EXTRACT (structured fields, per document) ─────────────────────────
 
-    # TODO(needs-api-key): This makes repeated live network calls to Unsiloed.
-    """
-    headers = {"api-key": api_key}
-    url = f"{base_url}/parse/{job_id}"
+def extract_document(pdf_path: Path, api_key: str, base_url: str, schema: dict | None = None) -> dict:
+    """POST /v2/extract (multipart pdf_file + schema_data) → poll GET /extract/{job_id}.
+    Returns the `result` dict: {field: {value, score:{grounding_score, extraction_score}, ...}}.
+    `schema` defaults to the manual/SOP EXTRACT_SCHEMA; chat_ingest passes its own.
+    Returns {} on any failure (caller falls back to parse-derived + conservative defaults)."""
+    try:
+        with open(pdf_path, "rb") as f:
+            r = requests.post(
+                f"{base_url}/v2/extract",
+                headers=_headers(api_key),
+                files={"pdf_file": (pdf_path.name, f, "application/pdf")},
+                data={
+                    "schema_data": json.dumps(schema or EXTRACT_SCHEMA),
+                    "model": "gamma",            # recommended default tier
+                    "enable_citations": "true",  # page_no + bboxes per field
+                },
+                timeout=120,
+            )
+        r.raise_for_status()
+        sub = r.json()
+        job_id = sub.get("job_id")
+        if not job_id:
+            print(f"  extract: no job_id ({sub}) — continuing without Extract", file=sys.stderr)
+            return {}
+        print(f"  extract job={job_id}  quota_left={sub.get('quota_remaining')}")
+        done = _poll(f"{base_url}/extract/{job_id}", api_key, ok={"completed", "succeeded"}, what="extract")
+        return done.get("result", {}) or {}
+    except (requests.RequestException, RuntimeError, TimeoutError) as exc:
+        print(f"  extract failed ({exc}) — continuing without Extract", file=sys.stderr)
+        return {}
+
+
+def _poll(url: str, api_key: str, ok: set[str], what: str) -> dict:
+    """Poll a job URL until status ∈ ok (case-insensitive). Raises on Failed/timeout."""
     start = time.monotonic()
     while True:
-        elapsed = time.monotonic() - start
-        if elapsed > _POLL_TIMEOUT:
-            raise TimeoutError(
-                f"Unsiloed parse job {job_id!r} timed out after {_POLL_TIMEOUT}s"
-            )
-        result = _http_get(url, headers)
-        status = result.get("status", "")
-        if status == "Succeeded":
-            total = result.get("total_chunks", "?")
-            print(f"     Succeeded — {total} chunks")
-            return result
-        if status == "Failed":
-            raise RuntimeError(
-                f"Unsiloed parse job {job_id!r} failed: {result.get('message', result)}"
-            )
-        print(f"     status={status!r}  ({elapsed:.0f}s elapsed) — waiting {_POLL_INTERVAL}s…")
+        r = requests.get(url, headers=_headers(api_key), timeout=60)
+        r.raise_for_status()
+        res = r.json()
+        status = str(res.get("status", "")).lower()
+        if status in ok:
+            return res
+        if status in ("failed", "error"):
+            raise RuntimeError(f"{what} job failed: {res.get('message', res)}")
+        if time.monotonic() - start > _POLL_TIMEOUT:
+            raise TimeoutError(f"{what} job timed out after {_POLL_TIMEOUT}s (last status={status!r})")
         time.sleep(_POLL_INTERVAL)
 
 
-def parse_pdf(pdf_path, api_key, base_url):
-    """
-    Full Parse flow for one PDF: submit → poll → return raw result dict.
-    This is the entry point for step 1 of the pipeline.
+# ── Extract-field access (score is a nested object on the real API) ─────────────
 
-    # TODO(needs-api-key): Calls Unsiloed API.
-    """
-    job_id = _submit_parse(pdf_path, api_key, base_url)
-    return _poll_parse(job_id, api_key, base_url)
-
-
-# ── Unsiloed Extract (step 2) ─────────────────────────────────────────────────
-
-# Custom JSON schema telling Unsiloed which fields to extract per chunk.
-# Confidence + citations are returned by the Extract endpoint per field.
-# Reference: reference.md §POST /extract (schema-based extraction).
-#
-# NOTE: The Extract endpoint path is NOT definitively confirmed in the skill docs
-# (reference.md lists it as "POST /extract — Extract Data … not used by ManuAI
-# ingest"). The endpoint, request body shape, and per-field response format
-# below are reasoned from the Anthropic/Claude integration tool-use schemas
-# described in reference.md.  FLAG FOR BOOTH VERIFICATION:
-#   • Confirm /extract endpoint path and base URL (may differ from /parse).
-#   • Confirm request body: does it accept {text: "…", schema: {…}} or
-#     does it require a previously parsed job_id?
-#   • Confirm response shape: {fields: {name: {value, confidence, citations[]}}}
-#   • Confirm whether Extract operates per-chunk or per-document.
-_EXTRACT_SCHEMA = {
-    "procedure_title": {
-        "type": "string",
-        "description": "The title or name of the procedure or section.",
-    },
-    "error_codes": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": "All fault/alarm/error codes mentioned (e.g. E-42, C4, C50).",
-    },
-    "safety_flag": {
-        "type": "boolean",
-        "description": (
-            "True if this chunk contains a safety warning, caution, danger notice, "
-            "lockout/tagout (LOTO) instruction, or any personal-injury risk."
-        ),
-    },
-    "steps": {
-        "type": "array",
-        "items": {"type": "string"},
-        "description": (
-            "Ordered procedure steps, each as a plain string. "
-            "Empty list if the chunk is reference material, not a procedure."
-        ),
-    },
-}
+def _clean_value(v):
+    """Unwrap citation-wrapped Extract values. With enable_citations=true the API wraps
+    each value (and each ARRAY element) as {'__value__': {'value': X, 'score':…, 'citation':…}};
+    strip that back to plain X / [X, …] so downstream sees clean scalars + string lists."""
+    def unwrap(e):
+        if isinstance(e, dict) and "__value__" in e:
+            inner = e["__value__"]
+            return inner.get("value") if isinstance(inner, dict) else inner
+        return e
+    if isinstance(v, list):
+        return [unwrap(e) for e in v]
+    return unwrap(v)
 
 
-def extract_chunk(chunk_text, api_key, base_url):
-    """
-    Call POST /extract with a custom schema for one chunk of parsed Markdown text.
-    Returns a dict like:
-        {
-            "procedure_title":  {"value": "...", "confidence": 0.91, "citations": [...]},
-            "error_codes":      {"value": ["E-42"], "confidence": 0.88, "citations": [...]},
-            "safety_flag":      {"value": True, "confidence": 0.95, "citations": [...]},
-            "steps":            {"value": ["Step 1…", "Step 2…"], "confidence": 0.72, ...},
-        }
-    Returns {} on any error (caller applies safe defaults).
-
-    # TODO(needs-api-key): Calls Unsiloed API.
-    # FLAG FOR BOOTH VERIFICATION: endpoint path, request shape, response shape.
-    """
-    headers = {"api-key": api_key}
-    url = f"{base_url}/extract"
-    payload = {"text": chunk_text, "schema": _EXTRACT_SCHEMA}
-    try:
-        return _http_post_json(url, headers, payload)
-    except urllib.error.HTTPError as exc:
-        print(f"     [extract] HTTP {exc.code} — skipping Extract for this chunk", file=sys.stderr)
-        return {}
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"     [extract] error — {exc!r} — skipping Extract for this chunk", file=sys.stderr)
-        return {}
+def _field(extract_result: dict, name: str) -> tuple[object, float]:
+    """Return (value, confidence) for one Extract field. confidence = max(extraction,
+    grounding) score; 0.0 if absent. Real API: result[name] = {value, score:{...}}."""
+    f = extract_result.get(name)
+    if not isinstance(f, dict):
+        return None, 0.0
+    score = f.get("score")
+    if isinstance(score, dict):
+        conf = max(float(score.get("extraction_score", 0) or 0),
+                   float(score.get("grounding_score", 0) or 0))
+    else:
+        conf = float(score or 0)
+    return _clean_value(f.get("value")), conf
 
 
-# ── Parse result → section chunks ─────────────────────────────────────────────
+# ── Parse-chunk helpers ────────────────────────────────────────────────────────
 
-def _section_heading(segments):
-    """
-    Find the leading SectionHeader or Title segment text in a chunk's segment list.
-    Falls back to "Overview" if none found.
-    """
-    for seg in segments:
-        if seg.get("segment_type") in ("Title", "SectionHeader"):
-            text = (seg.get("content") or seg.get("markdown") or "").strip()
-            if text:
-                return text
+def _section_heading(segments: list) -> str:
+    for s in segments:
+        if s.get("segment_type") in ("Title", "SectionHeader"):
+            t = (s.get("content") or s.get("markdown") or "").strip().lstrip("#").strip()
+            if t:
+                return t
     return "Overview"
 
 
-def _first_page(segments):
-    """Return the page_number of the first segment (int), or None."""
-    for seg in segments:
-        pn = seg.get("page_number")
+def _first_page(segments: list):
+    for s in segments:
+        pn = s.get("page_number")
         if pn is not None:
             try:
                 return int(pn)
@@ -415,322 +308,212 @@ def _first_page(segments):
     return None
 
 
-def _chunk_markdown(raw_chunk):
-    """
-    Best-effort Markdown text for a raw Unsiloed chunk.
-    Prefer the top-level `embed` string (the chunk's Markdown rolled into one string).
-    Fall back to concatenating each segment's `markdown` field.
-    """
-    embed_text = raw_chunk.get("embed", "").strip()
-    if embed_text:
-        return embed_text
-    parts = []
-    for seg in raw_chunk.get("segments", []):
-        md = (seg.get("markdown") or seg.get("content") or "").strip()
-        if md:
-            parts.append(md)
-    return "\n\n".join(parts)
+def _chunk_markdown(chunk: dict) -> str:
+    embed = (chunk.get("embed") or "").strip()
+    if embed:
+        return embed
+    parts = [(s.get("markdown") or s.get("content") or "").strip() for s in chunk.get("segments", [])]
+    return "\n\n".join(p for p in parts if p)
 
 
-# ── Normalize one Unsiloed chunk → corpus.py schema (step 3) ─────────────────
+# ── Normalize: Unsiloed chunks + Extract → §3a corpus records ─────────────────
 
-def normalize_chunk(
-    raw_chunk,
-    doc_info,
-    api_key,
-    base_url,
-    chunk_index=0,
-    dry_run=False,
-):
-    """
-    Normalize one raw Unsiloed chunk into the corpus.py chunk schema (exactly 10 keys):
-        {id, sop_id, section, machine_id, doc_type, procedure_title,
-         safety_flag(bool), fault_codes(str), page, text}
+def normalize(parse_result: dict, extract_result: dict, meta: dict) -> list[dict]:
+    """Turn one document's Unsiloed output into corpus-schema chunk records (10 keys).
+    ONE Unsiloed chunk → ONE record (no re-chunking). Doc-level Extract fields enrich
+    every chunk; per-chunk section/page come from Parse; doc-level error_codes are
+    attributed to the chunks whose text actually contains them."""
+    doc_id = meta["sop_id"]
 
-    `doc_info`    — the manifest document dict for this PDF.
-    `chunk_index` — zero-based ordinal of this chunk within the PDF (used to disambiguate ids).
-    When `dry_run=True`, Extract is skipped (no API call).
-
-    Field mapping (see top-of-file comment block):
-      id               — f"{doc_id}--{i:03d}--{slug(section)}"
-                         Ordinal prefix guarantees uniqueness across headerless chunks
-                         (e.g. tables, figure captions, repeated "Overview" sections)
-                         that would otherwise collide on the section slug alone.
-                         Parse order is stable, so ids are stable across re-ingestion
-                         of the same document.  Deviation from the task's
-                         "slug(doc_id)-section" phrasing is intentional — uniqueness
-                         wins over a simpler format (Moss dedupes by id, so collisions
-                         silently discard chunks).
-      sop_id           — str(doc_id)
-      section          — SectionHeader/Title segment text; "Overview" if none
-      machine_id       — from manifest (never auto-detected)
-      doc_type         — manifest "type" field (default "manual")
-      procedure_title  — Extract "procedure_title".value (conf≥0.7), else sop_id
-      safety_flag      — derived (see _derive_safety_flag)
-      fault_codes      — ",".join(Extract "error_codes".value) or ""
-      page             — first segment page_number (int) or None
-                         NOTE: retriever.py MossRetriever hardcodes page=None on
-                         return — page is stored but won't surface at query time
-                         until the retriever is updated (Phase 4 DoD handoff item).
-      text             — f"{procedure_title}\n\n{chunk_markdown}"
-    """
-    doc_id       = str(doc_info["doc_id"])
-    machine_id   = str(doc_info["machine_id"])
-    doc_type     = str(doc_info.get("type", "manual"))
-    manifest_safety = bool(doc_info.get("safety_flag", False))
-
-    segments = raw_chunk.get("segments", [])
-    section  = _section_heading(segments)
-    page     = _first_page(segments)
-    md_text  = _chunk_markdown(raw_chunk)
-
-    # Step 2: Extract (skipped in dry-run or if empty chunk)
-    # TODO(needs-api-key): the extract_chunk call below makes a live Unsiloed API call.
-    extract_result = {}
-    if not dry_run and md_text.strip():
-        extract_result = extract_chunk(md_text, api_key, base_url)
-
-    # Pull Extract fields (with confidence gating)
-    def _extract_field(name):
-        """Return (value, confidence) for an Extract field, or (None, None)."""
-        field = extract_result.get(name, {})
-        if not isinstance(field, dict):
-            return None, None
-        return field.get("value"), field.get("confidence")
-
-    title_val, title_conf   = _extract_field("procedure_title")
-    codes_val, codes_conf   = _extract_field("error_codes")
-    safety_val, safety_conf = _extract_field("safety_flag")
-
-    # Procedure title: trust Extract if confidence ≥ 0.7, else fall back to sop_id.
-    if title_val and title_conf is not None and title_conf >= 0.7:
-        procedure_title = str(title_val)
-    else:
-        procedure_title = doc_id  # conservative fallback
-
-    # Fault codes: join list → comma-separated string (mirrors corpus.py).
-    if codes_val and isinstance(codes_val, list):
-        fault_codes = ",".join(str(c) for c in codes_val)
-    else:
-        fault_codes = ""
-
-    # Safety flag: conservative derivation (G12).
-    safety_flag = _derive_safety_flag(
-        text=md_text,
-        extract_safety=safety_val,
-        extract_confidence=safety_conf,
-        manifest_safety=manifest_safety,
+    # Document-level Extract fields (Unsiloed-extracted).
+    title_val, title_conf = _field(extract_result, "document_title")
+    codes_val, _ = _field(extract_result, "error_codes")
+    safety_val, safety_conf = _field(extract_result, "has_safety_warnings")
+    doc_title = str(title_val) if (title_val and title_conf >= _CONF_FLOOR) else doc_id
+    doc_codes = [str(c).strip() for c in (codes_val or []) if str(c).strip()]
+    # Conservative doc-level safety: keyword/manifest win; trust a False only if confident.
+    doc_safe_default = bool(meta["manifest_safety"]) or (
+        bool(safety_val) if safety_conf >= _CONF_FLOOR else True
     )
 
-    # Chunk id: ordinal-prefixed to prevent collisions on repeated/headerless section slugs.
-    # Format: "{doc_id}--{i:03d}--{slug(section)}"  (double-dash convention from corpus.py)
-    chunk_id = f"{doc_id}--{chunk_index:03d}--{_slug(section)}"
+    chunks = parse_result.get("chunks", [])
+    out = []
+    for i, ch in enumerate(chunks):
+        segs = ch.get("segments", [])
+        # Drop chrome-only chunks (page numbers, running headers/footers).
+        if segs and all(s.get("segment_type") in ("PageHeader", "PageFooter") for s in segs):
+            continue
+        md = _chunk_markdown(ch)
+        if not md.strip():
+            continue
 
-    # Text: same pattern as corpus.py  f"{procedure_title}\n\n{section_text}"
-    text = f"{procedure_title}\n\n{md_text}" if md_text.strip() else procedure_title
+        section = _section_heading(segs)
+        procedure_title = section if section != "Overview" else doc_title
 
-    return {
-        "id":              chunk_id,
-        "sop_id":          doc_id,
-        "section":         section,
-        "machine_id":      machine_id,
-        "doc_type":        doc_type,
-        "procedure_title": procedure_title,
-        "safety_flag":     safety_flag,
-        "fault_codes":     fault_codes,
-        "page":            page,
-        "text":            text,
-    }
+        # Fault codes for THIS chunk = doc-level extracted codes that appear in its text.
+        here = [c for c in doc_codes if c.lower() in md.lower()]
+        fault_codes = ",".join(dict.fromkeys(here))  # de-dupe, keep order
 
+        # Safety: per-chunk keyword OR (doc has warnings & no local signal) OR manifest.
+        safety_flag = bool(_SAFETY_RE.search(md)) or doc_safe_default
 
-# ── Intentional-gap guard ─────────────────────────────────────────────────────
-
-def _is_intentional_gap(doc_info):
-    """
-    Guard against accidentally ingesting documents whose content covers the
-    intentional-gap query topics (manifest `intentional_gaps`).
-
-    The gap queries are about bypassing safety interlocks and widening soft-limits.
-    None of the 3 OEM PDFs currently in the manifest are themselves "gap docs" —
-    they are real manuals and SHOULD be ingested.  This check is forward-looking:
-    if a PDF whose doc_id or title strongly matches a gap keyword is later added,
-    this function returns True and the PDF is skipped.
-
-    The actual intentional-gap protection is corpus-level (those QUERY TOPICS have
-    no positive-answer documents in the corpus) — not a path-based filter.
-    """
-    combined = " ".join([
-        str(doc_info.get("doc_id", "")),
-        str(doc_info.get("title", "")),
-        str(doc_info.get("path", "")),
-    ]).lower()
-    return any(kw in combined for kw in _INTENTIONAL_GAP_KEYWORDS)
+        out.append({
+            "id": f"{doc_id}--{i:03d}--{_slug(section)}",
+            "sop_id": doc_id,
+            "section": section,
+            "machine_id": meta["machine_id"],
+            "doc_type": meta["doc_type"],
+            "procedure_title": procedure_title,
+            "safety_flag": safety_flag,
+            "fault_codes": fault_codes,
+            "page": _first_page(segs),
+            "text": f"{procedure_title}\n\n{md}",
+        })
+    return out
 
 
-def write_local_index(pdf_chunks):
-    """Rebuild data/moss_index.json from SOP chunks + Unsiloed PDF chunks."""
-    sop_chunks = corpus.build_chunks()
-    all_chunks = sop_chunks + list(pdf_chunks)
-    by_machine = {}
-    for c in all_chunks:
-        by_machine[c["machine_id"]] = by_machine.get(c["machine_id"], 0) + 1
-    print(
-        f"\nLocal Moss index: {len(all_chunks)} chunks "
-        f"({len(sop_chunks)} SOP + {len(pdf_chunks)} PDF)  by machine: {by_machine}"
+# ── Per-document driver ────────────────────────────────────────────────────────
+
+def process(pdf_path: Path, meta: dict, api_key: str, base_url: str, pages: str | None) -> list[dict]:
+    print(f"\n{pdf_path.name}  → doc_id={meta['sop_id']!r} machine={meta['machine_id']!r} type={meta['doc_type']!r}")
+    parse_result = parse_document(pdf_path, api_key, base_url, pages)
+    print(f"  parsed: {parse_result.get('total_chunks', len(parse_result.get('chunks', [])))} chunks, "
+          f"{parse_result.get('page_count', '?')} pages")
+    extract_result = extract_document(pdf_path, api_key, base_url)
+    if extract_result:
+        tv, tc = _field(extract_result, "document_title")
+        cv, _ = _field(extract_result, "error_codes")
+        print(f"  extracted: title={tv!r} (conf {tc:.2f})  error_codes={cv}")
+    records = normalize(parse_result, extract_result, meta)
+    print(f"  → {len(records)} records (safety: {sum(r['safety_flag'] for r in records)}, "
+          f"with codes: {sum(1 for r in records if r['fault_codes'])})")
+    return records
+
+
+# ── Moss load (Unsiloed chunks + authored SOP chunks) ─────────────────────────
+
+def _to_doc_info(c: dict):
+    from inferedge_moss import DocumentInfo
+    return DocumentInfo(
+        id=c["id"],
+        text=c["text"],
+        metadata={
+            "machine_id": str(c["machine_id"]),
+            "sop_id": str(c["sop_id"]),
+            "doc_type": str(c["doc_type"]),
+            "procedure_title": str(c["procedure_title"]),
+            "section": str(c["section"]),
+            "safety_flag": "true" if c["safety_flag"] else "false",
+            "fault_codes": str(c.get("fault_codes", "")),
+            "page": str(c["page"]) if c.get("page") is not None else "",
+        },
     )
-    for c in all_chunks:
-        src = "PDF" if c.get("doc_type") == "manual" else "SOP"
-        print(f"   [{src}] {c['id']:<32}  [{c['machine_id']}]  §={c['section']!r}")
-    embed_and_write(all_chunks)
 
 
-# ── Per-PDF processing ────────────────────────────────────────────────────────
+async def load_into_moss(unsiloed_chunks: list[dict], with_sops: bool, index_name: str | None = None):
+    """(Re)build the Moss index from the authored .md SOP chunks (unless --no-sops)
+    plus the Unsiloed PDF chunks. create_index is the cloud build step (§12a)."""
+    client = make_client()
+    index = index_name or os.getenv("MOSS_INDEX_NAME", "manuals")
+    model = os.getenv("MOSS_MODEL_ID", "moss-minilm")
 
-def process_pdf(pdf_path, doc_info, api_key, base_url, dry_run=False):
-    """
-    Full pipeline for one PDF (steps 1 + 2 + 3):
-      1. Parse (Unsiloed) → raw chunks
-      2. For each raw chunk: Extract → normalize to corpus schema
-    Returns list of normalized chunk dicts.
+    sop_docs = [_to_doc_info(c) for c in corpus.build_chunks()] if with_sops else []
+    pdf_docs = [_to_doc_info(c) for c in unsiloed_chunks]
+    all_docs = sop_docs + pdf_docs
 
-    # TODO(needs-api-key): Calls Unsiloed /parse and /extract APIs.
-    """
-    doc_id = doc_info["doc_id"]
-    print(f"\nProcessing {pdf_path.name!r}  (doc_id={doc_id!r}, machine={doc_info['machine_id']!r})")
+    by_machine: dict[str, int] = {}
+    for d in all_docs:
+        by_machine[d.metadata["machine_id"]] = by_machine.get(d.metadata["machine_id"], 0) + 1
+    print(f"\nMoss '{index}': {len(all_docs)} docs ({len(sop_docs)} SOP + {len(pdf_docs)} Unsiloed)  by machine: {by_machine}")
 
-    if dry_run:
-        # Dry-run: synthesize one dummy chunk per PDF to verify normalization logic.
-        dummy_raw = {
-            "segments": [
-                {
-                    "segment_type": "SectionHeader",
-                    "content":      f"[DRY-RUN] {doc_id} Overview",
-                    "markdown":     f"# {doc_id} Overview\n\nDry-run placeholder — no API call made.",
-                    "page_number":  1,
-                    "confidence":   1.0,
-                }
-            ],
-            "embed": f"# {doc_id} Overview\n\nDry-run placeholder — no API call made.",
-        }
-        chunk = normalize_chunk(
-            dummy_raw, doc_info, api_key="", base_url="",
-            chunk_index=0, dry_run=True,
-        )
-        print(f"  [dry-run] 1 dummy chunk: id={chunk['id']!r}")
-        return [chunk]
-
-    # TODO(needs-api-key): Live path — makes real Unsiloed API calls below.
-    parse_result = parse_pdf(pdf_path, api_key, base_url)
-    raw_chunks   = parse_result.get("chunks", [])
-    print(f"  Parse returned {len(raw_chunks)} raw chunks")
-
-    normalized = []
-    for i, raw in enumerate(raw_chunks):
-        chunk = normalize_chunk(
-            raw, doc_info, api_key, base_url,
-            chunk_index=i, dry_run=False,
-        )
-        if not chunk["text"].strip():
-            continue  # skip empty chunks
-        normalized.append(chunk)
-        seg_count = len(raw.get("segments", []))
-        print(
-            f"  chunk {i+1}/{len(raw_chunks)}  "
-            f"id={chunk['id']!r}  page={chunk['page']}  "
-            f"safety={chunk['safety_flag']}  codes={chunk['fault_codes']!r}  "
-            f"segs={seg_count}"
-        )
-    print(f"  → {len(normalized)} normalized chunks (from {len(raw_chunks)} raw)")
-    return normalized
+    existing = {i.name for i in await client.list_indexes()}
+    if index in existing:
+        print(f"  deleting existing '{index}'…")
+        await client.delete_index(index)
+    print(f"  create_index('{index}', {len(all_docs)} docs, '{model}')…")
+    await client.create_index(index, all_docs, model)
+    for _ in range(60):
+        st = str(getattr(await client.get_index(index), "status", "?"))
+        if any(s in st.upper() for s in ("READY", "ACTIVE", "COMPLETE", "SUCCEED")):
+            print(f"  index READY ({st})")
+            return
+        if "FAIL" in st.upper():
+            raise SystemExit(f"Moss index build failed: {st}")
+        await asyncio.sleep(2)
+    print("  warning: index not confirmed READY within poll window (continuing).")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── File discovery ─────────────────────────────────────────────────────────────
+
+def _collect_pdfs(args_paths: list[str]) -> list[Path]:
+    if not args_paths:
+        return sorted(paths.DATA.glob("machines/*/manuals/*.pdf"))
+    out: list[Path] = []
+    for a in args_paths:
+        p = Path(a)
+        if p.is_dir():
+            out.extend(sorted(p.rglob("*.pdf")))
+        elif p.is_file():
+            out.append(p)
+        else:
+            print(f"  SKIP {a!r} — not found", file=sys.stderr)
+    return out
+
+
+# ── Main ────────────────────────────────────────────────────────────────────────
 
 def main():
-    import argparse
+    ap = argparse.ArgumentParser(description="Unsiloed ingestion: any PDF → Parse+Extract+chunk → Moss.")
+    ap.add_argument("paths", nargs="*", help="PDF files or directories (default: data/machines/*/manuals/*.pdf)")
+    ap.add_argument("--machine", help="machine_id for files not resolvable from the manifest/path")
+    ap.add_argument("--pages", help="page range to limit cost, e.g. '1-10' or '2,4,6'")
+    ap.add_argument("--dry-run", action="store_true", help="Parse+Extract+normalize and print; do NOT touch Moss")
+    ap.add_argument("--no-sops", action="store_true", help="index only the Unsiloed chunks (skip authored .md SOPs)")
+    ap.add_argument("--index", help="override MOSS_INDEX_NAME (e.g. a throwaway test index)")
+    ap.add_argument("--json-out", metavar="FILE", help="also write the normalized chunks to FILE as JSON")
+    args = ap.parse_args()
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "Phase 4 Unsiloed ingestion: real manual PDFs → Unsiloed Parse/Extract "
-            "→ normalize → Moss index (alongside SOP chunks)."
-        )
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Normalize chunks without calling Unsiloed or Moss "
-            "(useful for schema/syntax verification when no API key is available)."
-        ),
-    )
-    parser.add_argument(
-        "--pdf",
-        metavar="PATH",
-        help="Process a single PDF path instead of all manuals (relative to repo root or absolute).",
-    )
-    args = parser.parse_args()
-
-    # Load .env so env vars are available.
     load_env()
-
-    # API key check — exit cleanly if unset (unless dry-run, which doesn't call Unsiloed).
-    if not args.dry_run:
-        api_key = _require_api_key()
-    else:
-        api_key = os.environ.get("UNSILOED_API_KEY", "")
-        print("[dry-run] Skipping UNSILOED_API_KEY check — no API calls will be made.")
-
+    api_key = _require_api_key()
     base_url = _base_url()
-    manifest  = _load_manifest()
-    path_idx  = _build_path_index(manifest)
+    manifest_index = _load_manifest_index()
 
-    # Determine which PDFs to process.
-    if args.pdf:
-        pdf_paths = [Path(args.pdf).resolve()]
-    else:
-        pdf_paths = _find_pdfs()
+    pdfs = _collect_pdfs(args.paths)
+    if not pdfs:
+        sys.exit("No PDFs to process.")
+    print(f"Unsiloed ingestion — {len(pdfs)} file(s)  base_url={base_url}")
+    print(f"  est. cost ≈ {_CREDITS_PER_PAGE}×pages per file (Parse) + per-file Extract\n")
 
-    print(f"\nUnsiloed ingestion — {len(pdf_paths)} PDF(s)  base_url={base_url!r}")
-    print(f"  dry_run={args.dry_run}\n")
+    all_chunks: list[dict] = []
+    for pdf in pdfs:
+        meta = resolve_doc_meta(pdf, manifest_index, args.machine)
+        try:
+            all_chunks.extend(process(pdf, meta, api_key, base_url, args.pages))
+        except (requests.RequestException, RuntimeError, TimeoutError) as exc:
+            print(f"  ERROR on {pdf.name}: {exc} — skipping this file", file=sys.stderr)
 
-    all_chunks = []
-    skipped    = []
-    for pdf_path in pdf_paths:
-        doc_info = _manifest_doc_for_pdf(pdf_path, path_idx)
-        if doc_info is None:
-            print(f"  SKIP {pdf_path.name!r} — not found in manifest (add it first)")
-            skipped.append(pdf_path.name)
-            continue
-        if _is_intentional_gap(doc_info):
-            print(f"  SKIP {pdf_path.name!r} — matches intentional-gap keyword guard")
-            skipped.append(pdf_path.name)
-            continue
-
-        chunks = process_pdf(pdf_path, doc_info, api_key, base_url, dry_run=args.dry_run)
-        all_chunks.extend(chunks)
-
-    # Summary.
-    by_machine = {}
+    by_machine: dict[str, int] = {}
     for c in all_chunks:
         by_machine[c["machine_id"]] = by_machine.get(c["machine_id"], 0) + 1
-    print(
-        f"\n── Normalization complete ──────────────────────────────────────────────\n"
-        f"  {len(all_chunks)} Unsiloed chunks  by machine: {by_machine}\n"
-        f"  {len(skipped)} PDF(s) skipped: {skipped or 'none'}"
-    )
+    print(f"\n── {len(all_chunks)} Unsiloed chunks total  by machine: {by_machine} ──")
+
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(all_chunks, indent=2))
+        print(f"  wrote {args.json_out}")
 
     if args.dry_run:
-        print("\n[dry-run] Skipping local Moss index build.")
+        print("\n[dry-run] Skipping Moss. Re-run without --dry-run to (re)build the index.")
+        return
+    if not all_chunks and args.no_sops:
+        print("No chunks to load — nothing to do.")
         return
 
-    if not all_chunks:
-        print("No chunks to index — nothing to do.")
-        return
-
-    write_local_index(all_chunks)
+    asyncio.run(load_into_moss(all_chunks, with_sops=not args.no_sops, index_name=args.index))
     print(
-        "\nPhase 4 complete. data/moss_index.json now contains SOP + real-manual chunks.\n"
-        "Next: ask a question whose answer lives only in the real manual to verify retrieval.\n"
+        "\nDone — Moss index rebuilt with the Unsiloed chunks.\n"
+        "Verify:  .venv/bin/python src/ask.py --retriever moss \"<a question only the manual answers>\"\n"
+        "Wifi-off (G14): load_index is a network fetch — authenticate + load ONLINE, keep the\n"
+        "process alive, THEN go offline; the cosine stub (index.json) is the bulletproof-offline path."
     )
 
 

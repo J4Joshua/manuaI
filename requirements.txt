@@ -8,8 +8,11 @@
 inferedge-moss==1.0.0b19
 
 # ── Ingestion — skill: unsiloed ─────────────────────────────────────────────────
-# No official SDK; the Unsiloed Parse API is plain HTTP.
+# No official SDK; the Unsiloed Parse + Extract API is plain HTTP.
 requests>=2.31
+# Chat ingestion (chat_ingest.py): Unsiloed parses documents, not raw JSON, so operator
+# chat threads are rendered to a text-layer PDF first, then go through the SAME pipeline.
+fpdf2>=2.7
 
 # ── Voice orchestration — skill: livekit-agents ─────────────────────────────────
 # Pinned to the 1.5.x stable line (avoids the 1.6 release-candidate API churn).
@@ -35,4 +38,5 @@ kokoro-onnx>=0.4                 # recommended: quality + fast, avoids espeak-ng
 # ── Shared utilities ────────────────────────────────────────────────────────────
 python-dotenv>=1.0              # load .env
 numpy>=1.26
-soundfile>=0.12                 # read/write/play audio for STT + TTS
+soundfile>=0.12                 # read/write audio for STT + TTS
+sounddevice>=0.4                # mic capture + speaker playback (offline_demo.py); needs PortAudio (brew install portaudio)

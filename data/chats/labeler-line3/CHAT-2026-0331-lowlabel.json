@@ -1,0 +1,13 @@
+{
+  "thread_id": "CHAT-2026-0331-lowlabel",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-03-31",
+  "topic": "Labeler low-label warning E-40 at roll changes",
+  "messages": [
+    {"user": "priya.ops",  "ts": "06:48", "text": "labeler keeps stopping with the low label warning E-40 near the end of each roll"},
+    {"user": "dan.maint",  "ts": "06:50", "text": "E-40 is the low-label alarm, that's expected near roll end. swap the roll and it clears. it's not a fault, just a prompt to reload"},
+    {"user": "priya.ops",  "ts": "06:55", "text": "ok swapped the roll, cleared. thought it was broken"},
+    {"user": "dan.maint",  "ts": "06:56", "text": "all good. if it alarms with a full roll, then check the low-label sensor alignment"}
+  ]
+}

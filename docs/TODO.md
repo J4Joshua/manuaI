@@ -21,19 +21,28 @@ Legend: ✅ done · ⏳ in progress · ☐ todo · 🔒 needs you
 5. ✅ **Unify Moss through `core.answer`** — `RETRIEVER=stub|moss` switch so both paths run the same loop. *Check: Moss beats pass via core.*
 6. ✅ **Phase 2 screen** — `server.py` (stdlib http.server + SSE) + `screen.html` rendering `screen_state` (transcript · answer · steps · citation · ⚠ safety · escalation). *Check: server serves the page and streams a screen_state; typed-input box (the R2 fallback, gap G3).*
 7. ✅ **Phase 3 voice WIRED** *(deps + livekit-server 1.12 installed; voice_smoke PASS; agent.py worker registers; live mic test = yours — see 🔒)* — `agent.py` (LiveKit: push-to-talk → STT → `core.answer` → TTS + data-channel push). Code + run-notes; not hardware-tested.
-8. ✅ **Scaffold Phase 4** *(code written + syntax-checked; needs Unsiloed API key to run — see 🔒)* — `unsiloed_ingest.py` (PDF → Unsiloed Parse/Extract → chunk → Moss). Code + schema mapping; not run (needs API key).
+8. ✅ **Phase 4 Unsiloed ingestion — IMPLEMENTED + LIVE-VERIFIED** — `unsiloed_ingest.py`: any PDF → Unsiloed **Parse** (server-side chunking) + **Extract** (`POST /v2/extract`, real schema) → normalize to §3a → Moss. Works on **any** file (manifest optional; machine_id from path/`--machine`). Verified end-to-end on a real PDF: parse→extract(title conf 0.99)→6 records→Moss `create_index`→`MossRetriever` query (score 0.99) incl. **page citation** (MossRetriever now reads `page` from metadata). Endpoints corrected vs the published docs (real `/v2/extract` is multipart per-document, status `completed`, `score` is `{grounding,extraction}`).
 9. ✅ Update `ARCHITECTURE.md` (§13 build status + gap deltas) + this TODO as items land.
 
 ## 🔒 Needs you (when you wake)
 - 🔒 **Moss office-hours** (4pm): offline cold-load/persist in Python + token-expiry — protects the wifi-off demo (`ARCHITECTURE.md §12e`)
 - 🔒 **Voice — LIVE MIC TEST only** (pipeline built + verified mic-free): deps + `livekit-server` 1.12 installed; `voice_smoke.py` PASS (TTS→STT→core→TTS); `agent.py` worker registers. **You do:** `livekit-server --dev` + `.venv/bin/python src/agent.py dev` + connect `screen.html` / a token to room `manuai` → hold push-to-talk, speak, release; then **redo with wifi OFF** (closes G1). First press garbled → tune `commit_user_turn` flush / VAD silence (see `agent.py`).
 - 🔒 **Pre-pull + verify offline**: Whisper-small-mlx + Kokoro + Silero weights are DOWNLOADED (in `models/` + HF cache); still set `HF_HUB_OFFLINE=1` on the demo box and confirm a wifi-off `voice_smoke.py` run (gap G6)
-- 🔒 **Unsiloed API key** in `.env` → run Phase 4 ingest on the real PDFs
+- ✅ **Unsiloed API key** in `.env` (live-verified) — Phase 4 ingest works. ⚠ Parse costs ≈5 credits/page: a full run on the big OEM manuals (UR20 365 pp, Label-Aire 128 pp) is ~2,500 credits and **rebuilds the live `manuals` index**. Run deliberately: `.venv/bin/python src/unsiloed_ingest.py` (use `--pages`, `--dry-run`, or `--index <throwaway>` first).
 - 🔒 **Rehearse the Moss wifi-off sequence** with `scripts/moss_offline_test.py` on the demo box (load online → keep process alive → wifi off)
 - 🔒 **Record the wifi-off video** — run `.venv/bin/python src/offline_demo.py` with wifi physically OFF (it's WebRTC-free → guaranteed offline), open the screen, press Enter + speak. Screen-record it: this IS the headline moment + the safety-net clip. (LiveKit `operator.html` is wifi-ON only — WebRTC can't go offline.)
 - 🔒 **Harden**: corpus to ~5–10 SOPs, re-tune, 5× dry-run, freeze (Phase 5)
 
 ## Progress log
+- **Secondary source — operator chats (corroboration & guidance)** — `chat_ingest.py`:
+  chat threads (`data/chats/<machine>/*.json`) → render PDF (`fpdf2`) → SAME Unsiloed
+  Parse+Extract+chunk → separate Moss `chats` index. `core.answer(..., chat_retriever=)`
+  runs SOPs + chats as two parallel retrievals; the answer/escalate decision is SOP-ONLY
+  (chats can't flip a refusal — proven: chats in the decision prompt weakened the Moss
+  refusal, so verification is a decoupled 2nd pass), chats only add `corroboration` +
+  `corroboration_note` (additive screen_state fields). `ask.py --chats`. Wifi-ON supplemental;
+  offline_demo stays chat-free. Verified: stub-SOP+chats 4/4 beats; no CHAT id in citations.
+  See `ARCHITECTURE.md §14`. (Full detail there.)
 - `66bdb7b` baseline: M1 stub + Moss integration + planning docs
 - Phase 1.5 refactor (items 2/4/5): `core.answer → screen_state` over the Retriever seam
   (`CosineRetriever` stub gate 0.70 + `MossRetriever` gate None), `render.py`, thin `ask.py`,

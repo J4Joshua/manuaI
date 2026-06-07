@@ -1,0 +1,39 @@
+{
+  "thread_id": "CHAT-2026-0118-lowlabel-warn",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-01-18",
+  "topic": "Line 3 LOW LABEL warning before run-out",
+  "messages": [
+    {
+      "user": "maria.ops",
+      "ts": "07:40",
+      "text": "controller is showing LOW LABEL on line 3, still running for now"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "07:41",
+      "text": "that's the low-label sensor at the supply reel telling you the roll is near the end. it's a warning, not a stop"
+    },
+    {
+      "user": "maria.ops",
+      "ts": "07:42",
+      "text": "how long do I have?"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "07:43",
+      "text": "usually a few hundred labels. stage a fresh roll now. when it hits MISSING LABELS / run-out it'll fault and stop the web"
+    },
+    {
+      "user": "maria.ops",
+      "ts": "07:55",
+      "text": "swapped the roll at a clean splice, rethreaded per the diagram, warning cleared"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "07:56",
+      "text": "good. splice with the web flat so it tracks through the peel tip, otherwise you'll trip BROKEN WEB"
+    }
+  ]
+}

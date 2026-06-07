@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0301-c4-comm-recurring",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-03-01",
+  "topic": "Cell A cobot recurring C4 communication fault",
+  "messages": [
+    {
+      "user": "priya.ops",
+      "ts": "12:10",
+      "text": "C4 again on the cell A cobot, second time this week"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "12:12",
+      "text": "C4 is comms between the control box and the arm. one-off is usually the base-flange cable, but recurring means a flaky cable or connector"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "12:15",
+      "text": "reseated the base flange cable last time and it came back"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "12:16",
+      "text": "then the cable is intermittent. lock out the cell (SOP-2204), inspect the base-flange connector pins for damage, and schedule a robot cable replacement. clear the stop per SOP-2201 for now"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "12:30",
+      "text": "logged a cable replacement, reseated and re-homed to finish the shift"
+    }
+  ]
+}

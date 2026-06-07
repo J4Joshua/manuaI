@@ -9,6 +9,7 @@
 - **Offline-first.** Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally. The headline demo works with the internet unplugged — nothing leaves the floor.
 - **Grounded or silent.** Every answer cites its source (`SOP-1187 §4.2`); if nothing in the corpus matches the task, it escalates to a supervisor rather than improvising. Safety-critical steps (lockout/tagout) surface *first*.
 - **Fast on-prem retrieval.** [Moss](https://www.moss.dev) for sub-10ms semantic search over the SOP corpus, with a fully-local cosine stub as the bulletproof-offline fallback.
+- **Corroborated by prior incidents.** A *second* Moss index of operator chat logs (ingested through the same Unsiloed pipeline) is retrieved in parallel and **cross-checks** the SOP answer against how similar past issues were actually resolved — surfaced as a "prior incidents" note. It's supplemental: chats are never cited and can never flip a refusal (see [docs/ARCHITECTURE.md §14](docs/ARCHITECTURE.md)). `src/ask.py --chats`.
 
 ## Architecture
 
@@ -56,13 +57,28 @@ Full contracts, data flows, and the gap register: **[docs/ARCHITECTURE.md](docs/
 
 ## Quickstart
 
-**Prereqs** (one time):
+**Prereqs** (one time, macOS / Apple Silicon):
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# 1. System deps (Homebrew). Ollama must be the CASK app — the `ollama` formula
+#    ships the CLI but NOT the llama-server runner, so embeddings/chat 500.
+brew install --cask ollama-app
+brew install ffmpeg portaudio livekit        # ffmpeg = mlx-whisper audio decode; portaudio = mic/speaker; livekit = wifi-on voice
+ollama serve &                               # start the local model server (keep running)
 ollama pull qwen2.5:3b && ollama pull nomic-embed-text   # local LLM + embeddings
-.venv/bin/python src/ingest_local.py                     # build the local index from data/
+
+# 2. Python (3.10–3.13 — the system 3.9 is too old) + deps
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 3. Config + offline index
+cp env .env                                  # or: cp .env.example .env  (then paste creds)
+.venv/bin/python src/ingest_local.py         # build the local index from data/
+
+# 4. Kokoro TTS voice files (one-time download into models/)
+mkdir -p models
+curl -L -o models/kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+curl -L -o models/voices-v1.0.bin  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 ```
-The first voice run downloads the Whisper + Kokoro models; after that it's fully offline (set `HF_HUB_OFFLINE=1` to guarantee it).
+The first voice run also downloads the Whisper MLX model; after that it's fully offline (set `HF_HUB_OFFLINE=1` to guarantee it).
 
 **Run — two modes, one brain + screen:**
 ```bash
@@ -86,7 +102,7 @@ livekit-server --config livekit.offline.yaml
 src/      all Python (paths.py anchors repo-root assets; core/retriever/corpus + entry-points)
 web/      screen.html, operator.html, static/ (bundled livekit-client)
 docs/     ARCHITECTURE.md, TODO.md, phases/   (PRD.md kept local/gitignored)
-data/     the SOP corpus — 2 machines (labeler + cobot) + manifest
+data/     SOP corpus (2 machines: labeler + cobot) + manifest + chats/ (operator threads)
 scripts/  Moss smoke/offline tests      .claude/skills/      attic/ (superseded)
 ```
 

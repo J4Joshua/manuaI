@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0521-loto-cobot",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-05-21",
+  "topic": "Cell A cobot LOTO before gripper service",
+  "messages": [
+    {
+      "user": "newhire.ops",
+      "ts": "14:00",
+      "text": "need to swap the gripper pads on the cell A cobot, what do I lock out?"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "14:02",
+      "text": "SOP-2204: stop the program, power off the arm, lock the cell main disconnect, and isolate the pneumatic gripper supply - then bleed the gripper air to zero. the arm holds position by brake but treat gravity as stored energy"
+    },
+    {
+      "user": "newhire.ops",
+      "ts": "14:03",
+      "text": "anything about the arm falling?"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "14:04",
+      "text": "before isolating, move the arm to a low, supported rest pose so it can't drop when brakes release. then isolate, bleed, verify zero, and service"
+    },
+    {
+      "user": "newhire.ops",
+      "ts": "14:05",
+      "text": "rest pose first, then isolate electrical + pneumatic, bleed to zero, verify"
+    }
+  ]
+}

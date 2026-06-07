@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0419-c262-encoder",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-04-19",
+  "topic": "Cell A cobot C262/C263 encoder index mark",
+  "messages": [
+    {
+      "user": "tomas.ops",
+      "ts": "11:05",
+      "text": "cobot faulted with C263 about an index mark not detected entering running"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "11:08",
+      "text": "C263 is joint encoder commutation - the motor encoder didn't find its index reference when entering RUNNING. usually needs a re-home / re-init of that joint"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "11:11",
+      "text": "which joint?"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "11:12",
+      "text": "the fault detail names it. move that joint slowly off any hard stop, then re-initialize/home from the pendant. clear the stop per SOP-2201 after it indexes"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "11:24",
+      "text": "re-homed, the joint indexed, fault cleared"
+    }
+  ]
+}
