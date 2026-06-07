@@ -59,7 +59,6 @@ from render import render
 # Config (all from env with sensible defaults)
 # ---------------------------------------------------------------------------
 PORT = int(os.environ.get("PORT", 8000))
-MACHINE_ID = os.environ.get("MACHINE_ID", "labeler-line3")
 
 # Whisper repo — same _resolve_whisper_repo logic as voice_smoke.py.
 def _resolve_whisper_repo(name: str) -> str:
@@ -171,7 +170,7 @@ class _Handler(BaseHTTPRequestHandler):
             state = _get_latest()
             state = {
                 **state,
-                "context_bubble": live_bubble_snapshot(state.get("machine_id")),
+                "context_bubble": live_bubble_snapshot(),
             }
             self._send_json(state)
             return
@@ -340,7 +339,7 @@ def save_wav(audio: np.ndarray, path: str) -> None:
 # ---------------------------------------------------------------------------
 async def process_transcript(transcript: str, retriever, swarm) -> dict:
     """Run core.answer and update LATEST. Returns the screen_state."""
-    state = await core.answer(transcript, MACHINE_ID, retriever, swarm=swarm)
+    state = await core.answer(transcript, retriever, swarm=swarm)
     state = with_bubble(state, swarm)
     _set_latest(state)
     return state
@@ -390,7 +389,7 @@ def warmup(retriever) -> None:
 
     # 3. LLM LAST, with the real prompt shape, TWICE (pay the co-residency re-warm now).
     try:
-        hits = _bg_runner.run(retriever.search("label jam fault lockout tagout", MACHINE_ID, k=5))
+        hits = _bg_runner.run(retriever.search("label jam fault lockout tagout", k=5))
         excerpts = "\n\n".join(
             f"[{h['id']}] {h.get('procedure_title', '')} — {h.get('section', '')}\n{h.get('text', '')}"
             for h in hits
@@ -412,7 +411,7 @@ def voice_loop(retriever=None) -> None:
     """The interactive demo loop. Runs until Ctrl-C."""
     if retriever is None:
         retriever = make_retriever()
-    swarm = get_swarm(MACHINE_ID, retriever, _on_bubble_update)
+    swarm = get_swarm(retriever, _on_bubble_update)
 
     # Confirm a default input device exists (informational only — demo may still work).
     try:
@@ -422,7 +421,6 @@ def voice_loop(retriever=None) -> None:
         print(f"[audio] WARNING: could not query default input device: {exc}")
 
     print(f"\nManuAI offline demo  —  http://localhost:{PORT}/")
-    print(f"Machine ID: {MACHINE_ID}")
     print("─" * 60)
     print("Press Enter, then speak. Recording stops after ~1.2 s of silence.")
     print("Ctrl-C to exit.")
@@ -535,7 +533,7 @@ def selftest() -> int:
         print(f"  [{label}] transcript: {transcript!r}")
         print(f"  [{label}] core.answer…")
         try:
-            state = asyncio.run(core.answer(transcript, MACHINE_ID, retriever))
+            state = asyncio.run(core.answer(transcript, retriever))
         except Exception as exc:
             print(f"  [{label}] brain FAILED: {exc}")
             return None
@@ -578,7 +576,7 @@ def selftest() -> int:
 
     test_state = {
         "question": "selftest-question",
-        "machine_id": MACHINE_ID,
+        "machine_id": "",
         "status": "answered",
         "answer": "selftest-answer",
         "citations": [{"sop_id": "SOP-1187", "section": "4", "page": None,

@@ -498,7 +498,7 @@ html, body {
   <!-- ── Top bar ─────────────────────────────────────────────── -->
   <header class="top-bar">
     <span class="logo">ManuAI</span>
-    <span id="hdr-machine" class="machine-badge">—</span>
+    <span id="hdr-machine" class="machine-badge" title="Searching all indexed SOPs and manuals">Full corpus indexed</span>
     <span id="hdr-status" class="status-chip idle">Idle</span>
   </header>
 
@@ -594,10 +594,6 @@ html, body {
       placeholder="Type a question for the machine operator… (R2 fallback)"
       autocomplete="off"
     />
-    <select id="machine-select" class="machine-select">
-      <option value="labeler-line3">labeler-line3</option>
-      <option value="cobot-cellA">cobot-cellA</option>
-    </select>
     <div class="spinner" id="spinner"></div>
     <button class="btn-ask" id="btn-ask">Ask</button>
   </footer>
@@ -606,6 +602,37 @@ html, body {
 
 <script>
 var currentScreenState = null;
+
+function formatCorpusLabel(s) {
+  if (!s) return 'Full corpus indexed';
+  var bubble = s.context_bubble || {};
+  var bubbleStatus = bubble.status || 'idle';
+  if (bubbleStatus === 'gathering' || bubbleStatus === 'refreshing') {
+    return 'Retrieval active';
+  }
+  if (s.status === 'answered' && s.citations && s.citations.length) {
+    var ids = [];
+    var seen = {};
+    s.citations.forEach(function (c) {
+      if (c.sop_id && !seen[c.sop_id]) {
+        seen[c.sop_id] = true;
+        ids.push(c.sop_id);
+      }
+    });
+    if (ids.length) {
+      var shown = ids.slice(0, 2).join(' · ');
+      if (ids.length > 2) shown += ' +' + (ids.length - 2);
+      return 'Grounded: ' + shown;
+    }
+  }
+  if (bubble.chunk_count > 0 && bubbleStatus === 'ready') {
+    return bubble.chunk_count + ' related chunks';
+  }
+  if (s.status === 'escalated') {
+    return 'No approved match';
+  }
+  return 'Full corpus indexed';
+}
 
 // ── applyState: THE ONLY RENDER PATH ─────────────────────────────────────────
 // Phase 3 can swap the data source (LiveKit data channel) without touching this function.
@@ -624,7 +651,6 @@ function applyState(s) {
   const sourceExcerpt = s.source_excerpt || '';
   const topScore  = typeof s.top_score  === 'number' ? s.top_score  : null;
   const threshold = typeof s.threshold  === 'number' ? s.threshold  : null;
-  const machineId = s.machine_id || '';
   const bubble    = s.context_bubble || null;
   const ctxLines  = bubble && Array.isArray(bubble.lines) ? bubble.lines : [];
   const ctxUpdates= bubble && Array.isArray(bubble.updates) ? bubble.updates : [];
@@ -688,7 +714,7 @@ function applyState(s) {
   // ── Header ──
   var hdrMachine = document.getElementById('hdr-machine');
   var hdrStatus  = document.getElementById('hdr-status');
-  hdrMachine.textContent = machineId || '—';
+  hdrMachine.textContent = formatCorpusLabel(s);
   hdrStatus.textContent  = statusLabel(status);
   hdrStatus.className    = 'status-chip ' + (status === 'idle' ? 'idle' : status);
 
@@ -869,18 +895,16 @@ poll(); // immediate first poll
 var askInput     = document.getElementById('ask-input');
 var askBtn       = document.getElementById('btn-ask');
 var spinnerEl    = document.getElementById('spinner');
-var machineSelect= document.getElementById('machine-select');
 var contextRefreshBtn = document.getElementById('context-refresh-btn');
 
 function doAsk() {
   var q = askInput.value.trim();
   if (!q) return;
-  var machine = machineSelect.value || 'labeler-line3';
 
   askBtn.disabled = true;
   spinnerEl.style.display = 'block';
 
-  var url = '/ask?q=' + encodeURIComponent(q) + '&machine=' + encodeURIComponent(machine);
+  var url = '/ask?q=' + encodeURIComponent(q);
   fetch(url)
     .then(function(r){ return r.json(); })
     .then(function(data) {
@@ -904,11 +928,10 @@ askInput.addEventListener('keydown', function(e){
 
 function refreshContext() {
   var state = currentScreenState || {};
-  var machine = state.machine_id || machineSelect.value || 'labeler-line3';
   var q = state.question || askInput.value.trim();
   if (contextRefreshBtn) contextRefreshBtn.disabled = true;
-  var url = '/context/refresh?machine=' + encodeURIComponent(machine);
-  if (q) url += '&q=' + encodeURIComponent(q);
+  var url = '/context/refresh';
+  if (q) url += '?q=' + encodeURIComponent(q);
   fetch(url)
     .then(function(r){ return r.json(); })
     .then(function(data) {

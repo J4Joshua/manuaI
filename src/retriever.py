@@ -3,15 +3,19 @@
 
 Both retrievers expose the SAME async interface so `core.answer()` is source-agnostic:
 
-    async def search(self, question, machine_id, k=5) -> list[record]
+    async def search(self, question, machine_id=None, k=5) -> list[record]
+
+  machine_id is accepted for API compatibility but ignored — search spans the full index.
+  Each record carries machine_id metadata for citations/display.
     class attr  threshold: float | None
 
 A `record` = chunk metadata + `text` + `score` (NO vector). Records have IDENTICAL keys:
     id, score(float), text, machine_id, sop_id, section, procedure_title,
     doc_type, page(None), safety_flag(bool), fault_codes(str)
 
-- LocalMossRetriever — offline index at data/moss_index.json (Moss-embedded corpus).
-  threshold=None (G15). Primary path for server/agent/offline_demo.
+- LocalMossRetriever — offline index at data/moss_index.json (full corpus; machine_id
+  on each chunk is metadata for citations, not a search filter). threshold=None (G15).
+  Primary path for server/agent/offline_demo.
 - CosineRetriever — legacy offline stub over index.json. threshold=0.30.
 - MossRetriever — sponsor-tech cloud path (load_index online, query local). threshold=None.
 """
@@ -81,11 +85,10 @@ class LocalMossRetriever:
         self.model_id = model_id or data["model_id"]
         self.index = data["chunks"]
 
-    async def search(self, question, machine_id, k=5):
+    async def search(self, question, machine_id=None, k=5):
         qv = await asyncio.to_thread(moss_embed.embed_text, question, self.model_id)
-        cands = [c for c in self.index if c.get("machine_id") in (machine_id, "all")] or self.index
         scored = []
-        for c in cands:
+        for c in self.index:
             rec = _chunk_to_record(c, moss_embed.cosine(qv, c["vector"]))
             scored.append(rec)
         scored.sort(key=lambda r: r["score"], reverse=True)
@@ -104,11 +107,10 @@ class CosineRetriever:
         with open(path) as f:
             self.index = json.load(f)
 
-    async def search(self, question, machine_id, k=5):
+    async def search(self, question, machine_id=None, k=5):
         qv = await asyncio.to_thread(embed, question, "query")
-        cands = [c for c in self.index if c.get("machine_id") in (machine_id, "all")] or self.index
         scored = []
-        for c in cands:
+        for c in self.index:
             rec = {k2: v for k2, v in c.items() if k2 != "vector"}
             rec["score"] = float(cosine(qv, c["vector"]))
             scored.append(rec)
@@ -134,11 +136,10 @@ class MossRetriever:
             await self.client.load_index(self.index)
             self._loaded = True
 
-    async def search(self, question, machine_id, k=5):
+    async def search(self, question, machine_id=None, k=5):
         await self.ensure_loaded()
-        flt = {"$and": [{"field": "machine_id", "condition": {"$eq": machine_id}}]}
         sr = await self.client.query(
-            self.index, question, QueryOptions(top_k=k, alpha=self.alpha, filter=flt)
+            self.index, question, QueryOptions(top_k=k, alpha=self.alpha)
         )
         out = []
         for d in sr.docs:

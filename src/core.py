@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """core.answer — the brain (ARCHITECTURE.md §3d).
 
-    async def answer(question, machine_id, retriever, k=5) -> screen_state (dict)
+    async def answer(question, retriever, k=5) -> screen_state (dict)
 
 The ONE function every consumer programs to. Produces a single `screen_state` dict on
 EVERY exit path (§3b) — no prints, no sys.exit. Flow:
@@ -60,7 +60,17 @@ Base it ONLY on the provided text; never invent."""
 SOURCE_EXCERPT_LIMIT = 500
 
 
-def _escalated(question, machine_id, reason, top_score, threshold, corroboration=None):
+def _inferred_machine_id(cited: list, primary_hits: list) -> str:
+    """Display-only label from chunk metadata — not an operator input."""
+    for pool in (cited, primary_hits):
+        for h in pool:
+            mid = h.get("machine_id")
+            if mid and mid not in ("all", "None", ""):
+                return str(mid)
+    return ""
+
+
+def _escalated(question, reason, top_score, threshold, corroboration=None, primary_hits=None):
     """A screen_state for any refusal branch. Invariants (§3b): citations/steps/
     safety_warnings empty, steps_source None, safety_flag False, source_excerpt "".
     `corroboration` (prior operator incidents) is supplemental + additive — it may be
@@ -68,7 +78,7 @@ def _escalated(question, machine_id, reason, top_score, threshold, corroboration
     affects the refusal decision, so it does not touch any §3b invariant."""
     return {
         "question": question,
-        "machine_id": machine_id,
+        "machine_id": _inferred_machine_id([], primary_hits or []),
         "status": "escalated",
         "answer": reason,
         "citations": [],
@@ -114,11 +124,11 @@ async def _finish(state, swarm, question, primary_hits):
     return state
 
 
-async def _safe_search(chat_retriever, question, machine_id, k):
+async def _safe_search(chat_retriever, question, k):
     """Chat retrieval is supplemental — a failure (index missing, network) must never
     break the authoritative answer. Returns [] on any error."""
     try:
-        return await chat_retriever.search(question, machine_id, k)
+        return await chat_retriever.search(question, None, k)
     except Exception:  # noqa: BLE001 - supplemental source, degrade gracefully
         return []
 
@@ -141,7 +151,6 @@ def _corroboration(chat_hits, limit=3):
 
 async def answer(
     question,
-    machine_id,
     retriever,
     k=5,
     chat_retriever=None,
@@ -159,23 +168,23 @@ async def answer(
     if swarm is not None:
         swarm.foreground_begin()
     try:
-        return await _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm)
+        return await _answer_impl(question, retriever, k, chat_retriever, swarm)
     finally:
         if swarm is not None:
             swarm.foreground_end()
 
 
-async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm):
+async def _answer_impl(question, retriever, k, chat_retriever, swarm):
     threshold = retriever.threshold
 
     # Two simultaneous, source-separated retrievals: SOPs (authoritative) + chats (supplemental).
     if chat_retriever is not None:
         primary_hits, chat_hits = await asyncio.gather(
-            retriever.search(question, machine_id, k),
-            _safe_search(chat_retriever, question, machine_id, 3),
+            retriever.search(question, k=k),
+            _safe_search(chat_retriever, question, 3),
         )
     else:
-        primary_hits, chat_hits = await retriever.search(question, machine_id, k), []
+        primary_hits, chat_hits = await retriever.search(question, k=k), []
 
     hits = _merge_hits(primary_hits, swarm)
     top_score = primary_hits[0]["score"] if primary_hits else 0.0
@@ -187,9 +196,10 @@ async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm
     if not primary_hits or (threshold is not None and top_score < threshold):
         return await _finish(
             _escalated(
-                question, machine_id,
+                question,
                 "No SOP matches closely enough to answer safely.",
                 top_score, threshold, corroboration,
+                primary_hits=primary_hits,
             ),
             swarm, question, primary_hits,
         )
@@ -205,9 +215,10 @@ async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm
     except json.JSONDecodeError:
         return await _finish(
             _escalated(
-                question, machine_id,
+                question,
                 "Model did not return valid JSON — retry, or check Ollama is running.",
                 top_score, threshold, corroboration,
+                primary_hits=primary_hits,
             ),
             swarm, question, primary_hits,
         )
@@ -220,9 +231,10 @@ async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm
     if out.get("escalate") or not cited or not out.get("answer"):
         return await _finish(
             _escalated(
-                question, machine_id,
+                question,
                 out.get("answer") or "Could not ground an answer in the SOPs.",
                 top_score, threshold, corroboration,
+                primary_hits=primary_hits,
             ),
             swarm, question, primary_hits,
         )
@@ -270,7 +282,7 @@ async def _answer_impl(question, machine_id, retriever, k, chat_retriever, swarm
 
     state = {
         "question": question,
-        "machine_id": machine_id,
+        "machine_id": _inferred_machine_id(cited, primary_hits),
         "status": "answered",
         "answer": out["answer"],
         "citations": citations,

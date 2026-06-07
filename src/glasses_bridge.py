@@ -496,7 +496,7 @@ class _ScreenHandler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/state":
             st = offline_demo._get_latest()
-            st = {**st, "context_bubble": live_bubble_snapshot(st.get("machine_id"))}
+            st = {**st, "context_bubble": live_bubble_snapshot()}
             self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
             return
         # Static files under web/ (operator.html, screen.html, static/*) — path-guarded.
@@ -524,9 +524,9 @@ def run_live() -> int:
     _install_speak_guard()
     _install_turn_seq_stamp()
     _retriever = offline_demo.make_retriever()
-    _swarm = offline_demo.get_swarm(offline_demo.MACHINE_ID, _retriever, offline_demo._on_bubble_update)
+    _swarm = offline_demo.get_swarm(_retriever, offline_demo._on_bubble_update)
     _start_screen_server()
-    _log(f"index loaded: {len(_retriever.index)} chunks · machine_id={offline_demo.MACHINE_ID}")
+    _log(f"index loaded: {len(_retriever.index)} chunks (corpus-wide retrieval)")
     _log(f"screen (operator console): http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
     try:
         asyncio.run(_serve_forever())
@@ -814,7 +814,7 @@ async def _run_suite(*, stub: bool) -> int:
     # real Moss retriever there — keeps --selftest-wire model- and data-free.
     if not stub:
         _retriever = offline_demo.make_retriever()
-        _swarm = offline_demo.get_swarm(offline_demo.MACHINE_ID, _retriever, offline_demo._on_bubble_update)
+        _swarm = offline_demo.get_swarm(_retriever, offline_demo._on_bubble_update)
     _quiet_handshake_noise()
     _install_speak_guard()
     if stub:

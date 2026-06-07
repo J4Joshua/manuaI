@@ -32,7 +32,7 @@ def _build(kind):
     return CosineRetriever()
 
 
-async def run(machine, kind, with_chats):
+async def run(kind, with_chats):
     retriever = _build(kind)
     chat_retriever = (
         MossRetriever(make_client(), os.getenv("CHAT_INDEX_NAME", "chats"),
@@ -40,7 +40,7 @@ async def run(machine, kind, with_chats):
         if with_chats else None
     )
 
-    state = await core.answer(QUERY, machine, retriever, chat_retriever=chat_retriever)
+    state = await core.answer(QUERY, retriever, chat_retriever=chat_retriever)
 
     # 1) the operator-facing screen, exactly as the UI would render it
     render.render(state)
@@ -49,7 +49,7 @@ async def run(machine, kind, with_chats):
     cites = sorted(c["sop_id"] for c in state["citations"])
     print("-" * 60)
     print(f"  query     : {QUERY!r}")
-    print(f"  machine   : {machine}")
+    print(f"  inferred  : {state.get('machine_id') or '-'}")
     print(f"  retriever : {kind}{'  (+chats)' if with_chats else ''}")
     print(f"  status    : {state['status']}")
     print(f"  top_score : {state['top_score']}   threshold: {state['threshold']}")
@@ -73,12 +73,11 @@ async def run(machine, kind, with_chats):
 
 def main():
     ap = argparse.ArgumentParser(description="Run the brake-release query through ManuAI.")
-    ap.add_argument("--machine", default=os.getenv("MACHINE_ID", "cobot-cellA"))
     ap.add_argument("--retriever", choices=("stub", "moss"), default="stub")
     ap.add_argument("--chats", action="store_true",
                     help="also query the operator-chat index (needs wifi/load)")
     args = ap.parse_args()
-    sys.exit(asyncio.run(run(args.machine, args.retriever, args.chats)))
+    sys.exit(asyncio.run(run(args.retriever, args.chats)))
 
 
 if __name__ == "__main__":

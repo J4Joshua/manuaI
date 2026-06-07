@@ -11,7 +11,7 @@ import core
 from retriever import make_retriever
 
 JAM = "The labeler on line 3 jammed and threw error E-42."
-MACHINE = "labeler-line3"
+# (machine_id was dropped from the retrieval/answer API in the corpus-wide-retrieval change.)
 
 def t():
     return time.perf_counter()
@@ -30,12 +30,12 @@ def main():
 
     r = make_retriever()
 
-    # --- Retrieval (embed query + cosine over 21 chunks) ---
+    # --- Retrieval (embed query + cosine over the corpus) ---
     print("\n[1] Retrieval  (Moss-minilm embed + cosine over index)")
     samples = []
     for i in range(6):
         s = t()
-        asyncio.run(r.search(JAM, MACHINE, k=5))
+        asyncio.run(r.search(JAM, k=5))
         samples.append(t()-s)
     stat("retrieval.search (first incl warm)", samples[:1])
     stat("retrieval.search (warm)", samples[1:])
@@ -45,7 +45,7 @@ def main():
     samples = []
     for i in range(6):
         s = t()
-        st = asyncio.run(core.answer(JAM, MACHINE, r))
+        st = asyncio.run(core.answer(JAM, r))
         samples.append(t()-s)
     stat("core.answer (turn 1 / cold)", samples[:1])
     stat("core.answer (warm)", samples[1:])
@@ -56,7 +56,7 @@ def main():
     print("\n[3] LLM only  (common.chat_json — what core spends in the model)")
     from common import chat_json
     sys_p = core.SYSTEM
-    hits = asyncio.run(r.search(JAM, MACHINE, k=5))
+    hits = asyncio.run(r.search(JAM, k=5))
     excerpts = "\n\n".join(f"[{h['id']}] {h['procedure_title']} — {h['section']}\n{h['text']}" for h in hits)
     user = f"Question: {JAM}\n\nSOP excerpts:\n{excerpts}"
     samples = []

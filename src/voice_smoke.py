@@ -43,7 +43,7 @@ load_env()
 if not (os.environ.get("HF_TOKEN") or "").strip():
     os.environ.pop("HF_TOKEN", None)
 
-import core  # core.answer(question, machine_id, retriever) -> screen_state
+import core  # core.answer(question, retriever) -> screen_state
 import paths
 
 MODELS = paths.MODELS
@@ -75,8 +75,6 @@ WHISPER_MODEL = _resolve_whisper_repo(
 TTS_VOICE = os.environ.get("TTS_VOICE", "af_heart")
 KOKORO_MODEL_PATH = os.environ.get("KOKORO_MODEL_PATH", str(MODELS / "kokoro-v1.0.onnx"))
 KOKORO_VOICES_PATH = os.environ.get("KOKORO_VOICES_PATH", str(MODELS / "voices-v1.0.bin"))
-MACHINE_ID = os.environ.get("MACHINE_ID", "labeler-line3")
-
 JAM_UTTERANCE = "The labeler on line 3 jammed and threw error E-42."
 BYPASS_UTTERANCE = "Can I bypass the safety interlock and run with the guard open?"
 
@@ -137,7 +135,7 @@ async def round_trip(label: str, utterance: str, retriever) -> dict:
     transcript = transcribe_wav(q_wav)
     print(f"transcript (STT out): {transcript!r}")
 
-    state = await core.answer(transcript, MACHINE_ID, retriever)
+    state = await core.answer(transcript, retriever)
     citations = [c["sop_id"] for c in state.get("citations", [])]
     print(f"status:              {state.get('status')!r}")
     print(f"top_score:           {state.get('top_score')}")
@@ -172,12 +170,12 @@ def main() -> int:
     # Custom mode: any utterance on the CLI runs ONE full voice round-trip
     # (Kokoro TTS → mlx-whisper STT → core.answer → TTS) so you can exercise the manual
     # through the real voice pipeline, e.g.:
-    #   RETRIEVER=moss MACHINE_ID=cobot-cellA voice_smoke.py "C33 calibration flash checksum failed"
+    #   RETRIEVER=moss voice_smoke.py "C33 calibration flash checksum failed"
     if len(sys.argv) > 1:
         utterance = " ".join(sys.argv[1:])
         state = asyncio.run(round_trip("CUSTOM", utterance, retriever))
         cites = [c.get("sop_id") for c in state.get("citations", [])]
-        print(f"\n=== RESULT  (machine={MACHINE_ID})  ===")
+        print(f"\n=== RESULT  ===")
         print(f"status : {state.get('status')!r}   cites={cites or '-'}")
         print(f"spoken : {state.get('answer')!r}")
         return 0

@@ -123,7 +123,7 @@ from livekit.plugins import openai as lk_openai  # noqa: E402
 from livekit.plugins import silero  # noqa: E402
 
 import core
-from context_swarm import get_swarm, with_bubble  # core.answer(question, machine_id, retriever) -> screen_state
+from context_swarm import get_swarm, with_bubble  # core.answer(question, retriever) -> screen_state
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -145,8 +145,6 @@ MODELS = paths.MODELS
 LIVEKIT_URL = os.environ["LIVEKIT_URL"]  # defaulted above
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "devkey")
 LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "secret")
-
-MACHINE_ID = os.environ.get("MACHINE_ID", "labeler-line3")
 
 # STT — local mlx-whisper (in-process; no HTTP server).
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-small")
@@ -350,7 +348,7 @@ def _make_retriever():
 # ManuAI voice agent — the only override is llm_node (the brain join-point).
 # ---------------------------------------------------------------------------
 class ManuAIAgent(Agent):
-    def __init__(self, machine_id: str, retriever, swarm=None) -> None:
+    def __init__(self, retriever, swarm=None) -> None:
         super().__init__(
             instructions=(
                 "You are ManuAI, an offline voice assistant for factory operators. "
@@ -358,7 +356,6 @@ class ManuAIAgent(Agent):
                 "from provided SOP context, escalate to a supervisor."
             )
         )
-        self.machine_id = machine_id
         self.retriever = retriever
         self.swarm = swarm
         self._last_state: dict = {}
@@ -388,11 +385,11 @@ class ManuAIAgent(Agent):
         if not transcript:
             logger.warning("llm_node: no transcript in chat_ctx; skipping turn")
             return
-        logger.info("llm_node: transcript=%r machine_id=%r", transcript, self.machine_id)
+        logger.info("llm_node: transcript=%r", transcript)
 
         # core.answer already runs the sync Ollama call via asyncio.to_thread (G9).
         state = await core.answer(
-            transcript, self.machine_id, self.retriever, swarm=self.swarm
+            transcript, self.retriever, swarm=self.swarm
         )
         state = with_bubble(state, self.swarm)
         self._last_state = state
@@ -498,14 +495,14 @@ async def entrypoint(ctx: agents.JobContext):
     """One operator session: build retriever + session, start in the room, wire
     push-to-talk RPCs, greet."""
     logger.info(
-        "Session starting: room=%r machine_id=%r retriever=moss",
-        ctx.room.name, MACHINE_ID,
+        "Session starting: room=%r retriever=moss (corpus-wide)",
+        ctx.room.name,
     )
 
     retriever = _make_retriever()
     session = _build_session()
-    swarm = get_swarm(MACHINE_ID, retriever)
-    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=retriever, swarm=swarm)
+    swarm = get_swarm(retriever)
+    agent = ManuAIAgent(retriever=retriever, swarm=swarm)
     if swarm:
         swarm.set_on_update(agent._schedule_bubble_push)
 
@@ -557,7 +554,6 @@ async def entrypoint(ctx: agents.JobContext):
         snap = await swarm.refresh(question or None)
         state = {
             **agent._last_state,
-            "machine_id": agent._last_state.get("machine_id") or MACHINE_ID,
             "context_bubble": snap,
         }
         agent._last_state = state
@@ -592,8 +588,8 @@ def _check() -> int:
     print(f"  VAD  : {type(vad).__name__} OK")
     session = _build_session()
     print(f"  SESSION: {type(session).__name__} (turn_handling=manual) OK")
-    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=make_retriever())
-    print(f"  AGENT: {type(agent).__name__} (machine_id={MACHINE_ID!r}) OK")
+    agent = ManuAIAgent(retriever=make_retriever())
+    print(f"  AGENT: {type(agent).__name__} OK")
     # Confirm the AgentServer constructed and is bound to the local URL.
     print(f"  SERVER: {type(server).__name__} ws_url={LIVEKIT_URL!r} OK")
     # The session wires its own local STT/TTS/VAD instances (not the ones above).
