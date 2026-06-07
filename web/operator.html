@@ -123,6 +123,62 @@ html, body {
 .status-chip.escalated { background: rgba(239,68,68,.15);  color: var(--red);   border: 1px solid rgba(239,68,68,.3); }
 .status-chip.idle      { background: var(--bg); color: var(--text-dim); border: 1px solid var(--border); }
 
+/* ── Moss context bubble ─────────────────────────────────────── */
+#panel-context {
+  border-color: rgba(59,130,246,.35);
+  background: linear-gradient(180deg, rgba(59,130,246,.06), var(--surface));
+}
+#panel-context.gathering {
+  box-shadow: 0 0 0 1px rgba(59,130,246,.2), 0 0 24px var(--accent-glow);
+}
+#panel-context .context-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 10px;
+  letter-spacing: .04em;
+}
+#panel-context .context-status.gathering::after {
+  content: ' …';
+  animation: pulse 1.2s ease-in-out infinite;
+}
+#context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.context-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.context-line .ctx-sop {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border: 1px solid rgba(59,130,246,.25);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.context-line .ctx-text { color: var(--text); }
+.context-empty {
+  font-size: 14px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* ── Transcript / question panel ─────────────────────────────── */
 #panel-transcript .question-text {
   font-size: 20px;
@@ -535,6 +591,13 @@ html, body {
       <div class="talk-hint">Hold the button (or hold <kbd>Space</kbd>) to talk · release to send</div>
     </div>
 
+    <!-- Panel: Moss context swarm (background prefetch) -->
+    <div id="panel-context" class="card" style="display:none">
+      <div class="card-label">Background Context</div>
+      <div id="context-status" class="context-status"></div>
+      <div id="context-list"></div>
+    </div>
+
     <!-- Panel: transcript -->
     <div id="panel-transcript" class="card">
       <div class="card-label">Transcript</div>
@@ -652,6 +715,40 @@ function applyState(s) {
   const topScore  = typeof s.top_score  === 'number' ? s.top_score  : null;
   const threshold = typeof s.threshold  === 'number' ? s.threshold  : null;
   const machineId = s.machine_id || '';
+  const bubble    = s.context_bubble || null;
+  const ctxLines  = bubble && Array.isArray(bubble.lines) ? bubble.lines : [];
+  const ctxStatus = bubble && bubble.status ? bubble.status : 'idle';
+
+  // ── Moss context bubble ──
+  var panelContext = document.getElementById('panel-context');
+  var contextList  = document.getElementById('context-list');
+  var contextStatus= document.getElementById('context-status');
+  if (ctxLines.length > 0 || ctxStatus === 'gathering') {
+    panelContext.style.display = '';
+    panelContext.classList.toggle('gathering', ctxStatus === 'gathering');
+    var statusLabel = ctxStatus === 'gathering'
+      ? 'Moss swarm gathering related SOPs'
+      : (ctxStatus === 'ready' ? 'Context ready' : 'Background context');
+    contextStatus.textContent = statusLabel;
+    contextStatus.className = 'context-status' + (ctxStatus === 'gathering' ? ' gathering' : '');
+    contextList.innerHTML = '';
+    ctxLines.forEach(function(ln) {
+      var row = document.createElement('div');
+      row.className = 'context-line';
+      var sop = document.createElement('span');
+      sop.className = 'ctx-sop';
+      sop.textContent = ln.sop_id || 'SOP';
+      var txt = document.createElement('span');
+      txt.className = 'ctx-text';
+      txt.textContent = ln.text || '';
+      row.appendChild(sop);
+      row.appendChild(txt);
+      contextList.appendChild(row);
+    });
+  } else {
+    panelContext.style.display = 'none';
+    panelContext.classList.remove('gathering');
+  }
 
   // ── Header ──
   var hdrMachine = document.getElementById('hdr-machine');

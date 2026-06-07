@@ -69,5 +69,14 @@ def render(state):
         print("  [source]")
         print(f"      {snippet}")
 
+    bubble = state.get("context_bubble") or {}
+    lines = bubble.get("lines") or []
+    if lines:
+        print("-" * W)
+        print(f"  [context]  {bubble.get('status', 'idle')} — {len(lines)} prefetched chunk(s)")
+        for ln in lines[-6:]:
+            sop = ln.get("sop_id", "?")
+            print(f"      {sop}  {ln.get('text', '')}")
+
     print("=" * W)
     print()

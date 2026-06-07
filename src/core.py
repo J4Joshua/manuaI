@@ -64,18 +64,41 @@ def _escalated(question, machine_id, reason, top_score, threshold):
     }
 
 
-async def answer(question, machine_id, retriever, k=5):
+def _merge_hits(primary_hits: list, swarm) -> list:
+    """Primary Moss hits first, then swarm-prefetched chunks (deduped by id)."""
+    if not swarm:
+        return list(primary_hits)
+    seen = {h["id"] for h in primary_hits}
+    merged = list(primary_hits)
+    for h in swarm.get_hits():
+        if h["id"] not in seen:
+            merged.append(h)
+            seen.add(h["id"])
+    return merged
+
+
+async def _finish(state, swarm, question, primary_hits):
+    if swarm and primary_hits:
+        await swarm.after_answer(question, primary_hits)
+    return state
+
+
+async def answer(question, machine_id, retriever, k=5, swarm=None):
     threshold = retriever.threshold
 
-    hits = await retriever.search(question, machine_id, k)
-    top_score = hits[0]["score"] if hits else 0.0
+    primary_hits = await retriever.search(question, machine_id, k)
+    hits = _merge_hits(primary_hits, swarm)
+    top_score = primary_hits[0]["score"] if primary_hits else 0.0
 
     # THRESHOLD GATE — deterministic when threshold is set. Moss has threshold=None.
-    if not hits or (threshold is not None and top_score < threshold):
-        return _escalated(
-            question, machine_id,
-            "No SOP matches closely enough to answer safely.",
-            top_score, threshold,
+    if not primary_hits or (threshold is not None and top_score < threshold):
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                "No SOP matches closely enough to answer safely.",
+                top_score, threshold,
+            ),
+            swarm, question, primary_hits,
         )
 
     excerpts = "\n\n".join(
@@ -87,10 +110,13 @@ async def answer(question, machine_id, retriever, k=5):
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:
-        return _escalated(
-            question, machine_id,
-            "Model did not return valid JSON — retry, or check Ollama is running.",
-            top_score, threshold,
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                "Model did not return valid JSON — retry, or check Ollama is running.",
+                top_score, threshold,
+            ),
+            swarm, question, primary_hits,
         )
 
     # validate cited ⊆ retrieved (strip any surrounding brackets the model may emit)
@@ -99,10 +125,13 @@ async def answer(question, machine_id, retriever, k=5):
              if str(i).strip("[]") in by_id]
 
     if out.get("escalate") or not cited or not out.get("answer"):
-        return _escalated(
-            question, machine_id,
-            out.get("answer") or "Could not ground an answer in the SOPs.",
-            top_score, threshold,
+        return await _finish(
+            _escalated(
+                question, machine_id,
+                out.get("answer") or "Could not ground an answer in the SOPs.",
+                top_score, threshold,
+            ),
+            swarm, question, primary_hits,
         )
 
     # ---- ANSWERED — assemble from cited-chunk metadata (un-fakeable) ----
@@ -140,7 +169,7 @@ async def answer(question, machine_id, retriever, k=5):
 
     excerpt = (cited[0].get("text") or "")[:SOURCE_EXCERPT_LIMIT]
 
-    return {
+    state = {
         "question": question,
         "machine_id": machine_id,
         "status": "answered",
@@ -154,3 +183,4 @@ async def answer(question, machine_id, retriever, k=5):
         "threshold": threshold,
         "source_excerpt": excerpt,
     }
+    return await _finish(state, swarm, question, primary_hits)

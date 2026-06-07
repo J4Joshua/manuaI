@@ -36,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 import core
 import paths
+from context_swarm import empty_bubble, get_bg_runner, get_swarm, live_bubble_snapshot, with_bubble
 from retriever import make_retriever, load_env
 
 # Load .env so LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are available to
@@ -85,7 +86,13 @@ LATEST = {
     "top_score": 0.0,
     "threshold": None,
     "source_excerpt": "",
+    "context_bubble": empty_bubble(),
 }
+
+
+def _on_bubble_update(snap: dict) -> None:
+    global LATEST
+    LATEST = {**LATEST, "context_bubble": snap}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -246,7 +253,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/state":
-            self._send_json(LATEST)
+            state = dict(LATEST)
+            state["context_bubble"] = live_bubble_snapshot(state.get("machine_id"))
+            self._send_json(state)
             return
 
         if path == "/ask":
@@ -256,7 +265,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "q parameter required"}, 400)
                 return
             try:
-                state = asyncio.run(core.answer(q, machine, RETRIEVER))
+                swarm = get_swarm(machine, RETRIEVER, _on_bubble_update)
+                state = get_bg_runner().run(
+                    core.answer(q, machine, RETRIEVER, swarm=swarm)
+                )
+                state = with_bubble(state, swarm)
                 LATEST = state
                 self._send_json(state)
             except Exception as exc:
