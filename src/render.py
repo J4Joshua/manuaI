@@ -32,7 +32,19 @@ def _corroboration(state):
 
 def render(state):
     print()
-    print(f'[mic] Operator: "{state["question"]}"   [machine: {state["machine_id"]}]')
+    print(f'[mic] Operator: "{state["question"]}"')
+    if state.get("status") == "answered" and state.get("citations"):
+        ids = []
+        seen = set()
+        for c in state["citations"]:
+            sid = c.get("sop_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                ids.append(sid)
+        if ids:
+            print(f"      [grounded: {' · '.join(ids[:3])}]")
+    elif state.get("status") == "escalated":
+        print("      [no approved match in corpus]")
     print(
         f"      top_score={state['top_score']:.3f}   threshold={_thr(state)}   "
         f"status={state['status'].upper()}"
