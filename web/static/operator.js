@@ -9,7 +9,7 @@
  * getUserMedia as a stand-in for Ray-Ban glasses until wired.
  *
  * Typed /ask fallback (G3) survives if mic/agent is flaky.
- * Demo mode (default): scripted E-42 scenario — no LiveKit/mic. ?live=1 for real stack.
+ * Demo mode (default): scripted C57 brake-release scenario (cobot-cellA) — no LiveKit/mic. ?live=1 for real stack.
  * No CDN: LivekitClient from /static/livekit-client.umd.min.js.
  */
 (function () {
@@ -33,36 +33,35 @@
   var logEl = document.getElementById("op-log");
   var demoBtn = document.getElementById("demo-btn");
 
-  var DEMO_QUESTION = "The labeler on line 3 jammed and threw error E-42.";
+  var DEMO_QUESTION = "The break release failed and threw error. C57.";
   var DEMO_ANSWER_STATE = {
     question: DEMO_QUESTION,
-    machine_id: "labeler-line3",
+    machine_id: "cobot-cellA",
     status: "answered",
-    answer: "Stop the line, complete lockout per SOP-1190, then clear the jam at the peel tip and re-thread the web.",
+    answer: "First check brake and solenoid, then check TCP configuration, payload, and mounting settings.",
     citations: [{
-      sop_id: "SOP-1187",
-      section: "4",
+      sop_id: "UR-ERRCODES",
+      section: "1.40. C57 Brake release failure",
       page: null,
-      procedure_title: "Clearing a Label-Web Jam (Fault E-42)",
+      procedure_title: "1.40. C57 Brake release failure",
     }],
     steps_source: {
-      sop_id: "SOP-1187",
-      section: "4",
-      procedure_title: "Clearing a Label-Web Jam (Fault E-42)",
+      sop_id: "UR-ERRCODES",
+      section: "1.40. C57 Brake release failure",
+      procedure_title: "1.40. C57 Brake release failure",
     },
     steps: [
-      "Stop the line — press labeler STOP, then line E-STOP.",
-      "Lock out and bleed per SOP-1190 (0 psi before reaching in).",
-      "Clear the jam at the peel tip; inspect the label sensor.",
-      "Re-thread the web per Fig 8/9; run 3 test products before full speed.",
+      "Check brake and solenoid (per UR Error Codes Directory C57).",
+      "Check TCP configuration, payload, and mounting settings.",
+      "If the fault repeats, record any C57A1–C57A3 subcode from the Log Tab and escalate to automation maintenance.",
     ],
-    safety_warnings: ["Lockout/Tagout required before clearing — complete SOP-1190 first."],
+    safety_warnings: ["The arm can move when re-enabled — keep clear of the operating space and know the nearest E-STOP (SOP-2201 §3)."],
     safety_flag: true,
-    top_score: 0.89,
+    top_score: 1.0,
     threshold: 0.7,
     source_excerpt: "",
     corroboration: [],
-    corroboration_note: "Matches a prior E-42 jam incident on Line 3 (Mar 2026).",
+    corroboration_note: "Grounded to UR Error Codes Directory §1.40 (C57 brake release failure).",
   };
   var demoTimer = null;
   var pendingRevealMsgId = null;
@@ -132,7 +131,7 @@
       placeholder.hidden = false;
       vignette.hidden = false;
       overlay.hidden = false;
-      ptxt.textContent = "Demo — Line 3 labeler POV";
+      ptxt.textContent = "Demo — Cell A cobot POV";
       phint.textContent = "Simulated Ray-Ban feed (no hardware required).";
     }
     function showPlaceholder(denied) {
@@ -920,7 +919,7 @@
     function doAsk() {
       var q = askInput.value.trim();
       if (!q) return;
-      var machine = (machineSelect && machineSelect.value) || "labeler-line3";
+      var machine = (machineSelect && machineSelect.value) || "cobot-cellA";
       askBtn.disabled = true;
       if (spinnerEl) spinnerEl.style.display = "block";
       pendingOperatorId = null;
@@ -1011,7 +1010,7 @@
   function runDemoScenario() {
     if (turnActive) return;
     resetTranscript();
-    log("Playing demo scenario — Line 3 E-42 jam");
+    log("Playing demo scenario — Cell A C57 brake release");
     demoStartTurn();
     demoTimer = setTimeout(function () {
       demoStopTurn();
@@ -1020,9 +1019,11 @@
 
   function initDemo() {
     if (demoBtn) demoBtn.hidden = false;
-    log("Demo mode — scripted Line 3 E-42 jam scenario");
+    log("Demo mode — scripted Cell A C57 brake-release scenario");
     log("Hold to talk, click Play demo, or wait for auto-play. ?live=1 for LiveKit.");
-    setMachine("labeler-line3");
+    setMachine("cobot-cellA");
+    var machineSelect = document.getElementById("machine-select");
+    if (machineSelect) machineSelect.value = "cobot-cellA";
     setConn("ready", "Demo mode");
     setStatus("idle");
     enableButton(true);
