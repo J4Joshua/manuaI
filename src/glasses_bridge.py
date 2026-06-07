@@ -94,7 +94,7 @@ from websockets.exceptions import ConnectionClosed
 # they are swappable for the headless wire test; everything else we reach through
 # the `offline_demo` module object (and never modify offline_demo.py itself).
 import offline_demo
-from offline_demo import transcribe_wav, run_pipeline, synth_to_wav  # noqa: F401 (reused verbatim)
+from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
 from retriever import CosineRetriever
 
 # ---------------------------------------------------------------------------
@@ -129,6 +129,7 @@ _retriever: CosineRetriever | None = None
 _utterance_lock: asyncio.Lock | None = None   # serialise utterances (created in the loop)
 _speaking = False                              # True while a pipeline runs
 _cooldown_until = 0.0                          # loop.time() until which we keep dropping
+_tasks: set = set()                            # strong refs so dispatch tasks aren't GC'd mid-flight
 
 
 def _log(msg: str) -> None:
@@ -151,14 +152,16 @@ def _quiet_handshake_noise() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Streaming VAD — a faithful mirror of offline_demo.record_until_silence's RMS
-# state machine, fed by incoming WS frames at `in_rate` instead of an InputStream.
-# Analysis blocks are BLOCK_SIZE scaled to in_rate so the timing matches the laptop
-# VAD in real seconds, regardless of the rate the glasses send.
+# Streaming VAD — an INTENTIONAL copy of offline_demo.record_until_silence's RMS
+# state machine (the skill says to mirror it; offline_demo's version is pull-based —
+# stream.read() in a blocking loop — and offline_demo.py must NOT be modified, so the
+# logic can't be shared). Fed by incoming WS frames at `in_rate` instead of an
+# InputStream. Analysis blocks are BLOCK_SIZE scaled to in_rate so the timing matches
+# the laptop VAD in real seconds, whatever rate the glasses send. If the VAD logic or
+# constants change in offline_demo, keep this in sync by hand.
 # ---------------------------------------------------------------------------
 class StreamingVAD:
     def __init__(self, in_rate: int):
-        self.in_rate = in_rate
         self.block = max(1, int(round(BLOCK_SIZE * in_rate / SAMPLE_RATE)))
         self.silence_stop_blocks = max(1, int(SILENCE_STOP_SECS * in_rate / self.block))
         self.hard_cap_blocks = max(1, int(HARD_CAP_SECS * in_rate / self.block))
@@ -253,7 +256,9 @@ def _process_segment(segment: np.ndarray, in_rate: int) -> None:
         _log("empty transcript — ignoring segment")
         return
     _log(f"heard: {transcript!r}")
-    # run_pipeline = core.answer → _set_latest → render → speak (laptop). Verbatim.
+    # run_pipeline = core.answer → _set_latest → render → speak (laptop), reused verbatim.
+    # NB: transcribe_wav (above) and run_pipeline are called by BARE NAME (module globals)
+    # so --selftest-wire can rebind them to stubs — don't qualify them as offline_demo.*.
     run_pipeline(transcript, _retriever)
 
 
@@ -289,7 +294,11 @@ async def handle_publish_audio(ws) -> None:
     try:
         async for message in ws:
             if isinstance(message, str):
-                # First text message is the JSON header; tolerate stray text otherwise.
+                # ONLY the first text message is the header; ignore any later text so a
+                # stray frame can't re-init the VAD and discard an in-progress utterance.
+                if in_rate is not None:
+                    _log(f"ignoring text after header: {message[:60]!r}")
+                    continue
                 try:
                     hdr = json.loads(message)
                     in_rate = int(hdr.get("sampleRate", 48000))
@@ -319,7 +328,9 @@ async def handle_publish_audio(ws) -> None:
             segment = vad.feed(frame)
             if segment is not None:
                 _speaking = True                  # engage guard synchronously, pre-task
-                asyncio.create_task(_dispatch_utterance(segment, in_rate))
+                task = asyncio.create_task(_dispatch_utterance(segment, in_rate))
+                _tasks.add(task)                  # strong ref: asyncio only weak-refs tasks
+                task.add_done_callback(_tasks.discard)
     except ConnectionClosed:
         pass
     finally:
@@ -436,7 +447,18 @@ _WIRE: dict = {}
 
 
 def _idle_state() -> dict:
-    return dict(offline_demo.LATEST, status="idle", question="", answer="", citations=[])
+    # A fully clean screen_state (every field reset) so no field leaks across beats.
+    return {
+        "question": "", "machine_id": "", "status": "idle", "answer": "",
+        "citations": [], "steps_source": None, "steps": [], "safety_warnings": [],
+        "safety_flag": False, "top_score": 0.0, "threshold": None, "source_excerpt": "",
+    }
+
+
+def _http_get(port: int, path: str):
+    import urllib.request
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as r:
+        return r.status, r.read()
 
 
 def _fixture_48k(audio: np.ndarray, in_rate: int) -> np.ndarray:
@@ -599,12 +621,8 @@ async def _check_post_photo() -> bool:
         print(f"  [POST] error: {exc}  → {_FAIL}")
         return False
 
-    def _get():
-        import urllib.request
-        with urllib.request.urlopen(f"http://127.0.0.1:{GLASSES_PORT}/publish/photo", timeout=3) as r:
-            return r.status
     try:
-        status = await asyncio.to_thread(_get)   # server survived → GET still 200s
+        status, _ = await asyncio.to_thread(_http_get, GLASSES_PORT, "/publish/photo")  # server survived → GET 200s
         ok = status == 200
     except Exception as exc:  # noqa: BLE001
         print(f"  [POST] server unresponsive after POST: {exc}  → {_FAIL}")
@@ -614,14 +632,9 @@ async def _check_post_photo() -> bool:
 
 
 async def _check_http_200() -> bool:
-    def _get(port, path):
-        import urllib.request
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as r:
-            return r.status, r.read()
-
     ok = True
     try:
-        status, _ = await asyncio.to_thread(_get, GLASSES_PORT, "/")
+        status, _ = await asyncio.to_thread(_http_get, GLASSES_PORT, "/")
         ws_ok = status == 200
         ok = ok and ws_ok
         print(f"  [http] GET :{GLASSES_PORT}/ (non-WS) → {status}  → {_PASS if ws_ok else _FAIL}")
@@ -629,7 +642,7 @@ async def _check_http_200() -> bool:
         print(f"  [http] GET :{GLASSES_PORT}/ error: {exc}  → {_FAIL}")
         ok = False
     try:
-        status, body = await asyncio.to_thread(_get, offline_demo.PORT, "/state")
+        status, body = await asyncio.to_thread(_http_get, offline_demo.PORT, "/state")
         scr_ok = status == 200 and b"status" in body
         ok = ok and scr_ok
         print(f"  [http] GET :{offline_demo.PORT}/state (screen) → {status}  → {_PASS if scr_ok else _FAIL}")
@@ -648,7 +661,8 @@ async def _check_speaking_guard() -> bool:
     _WIRE["expect_status"] = "answered"
     _WIRE["expect_sop"] = None
     try:
-        # Two bursts back-to-back on one socket; the 2nd lands inside guard+cooldown.
+        # Two bursts back-to-back over two connections (the guard is global, not
+        # per-socket); the 2nd lands inside the guard+cooldown window and is dropped.
         await loopback_stream(_tone_fixture(1.2))
         await loopback_stream(_tone_fixture(1.2))
         await asyncio.sleep(SPEAK_COOLDOWN_SECS + 1.0)
