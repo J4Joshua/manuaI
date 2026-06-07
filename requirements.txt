@@ -3,9 +3,8 @@
 # Grouped by the .claude/skills/ component each belongs to.
 # Active lines = the recommended MLX-first offline path. Commented lines = alternatives.
 
-# ── Retrieval — skill: moss ─────────────────────────────────────────────────────
-# Pinned to the exact beta verified working against the live project (API can shift
-# between betas). Import name is `inferedge_moss`, NOT `moss`.
+# ── Retrieval — skill: moss (local embedder via moss_core) ────────────────────
+# inferedge-moss ships moss_core.PyEmbeddingService for offline moss-minilm embed.
 inferedge-moss==1.0.0b19
 
 # ── Ingestion — skill: unsiloed ─────────────────────────────────────────────────
@@ -34,9 +33,7 @@ mlx-whisper>=0.4                 # recommended on Apple Silicon (uses the GPU)
 kokoro-onnx>=0.4                 # recommended: quality + fast, avoids espeak-ng setup
 # piper-tts>=1.2                 # ultra-fast fallback
 
-# ── Local embeddings — only if MOSS_MODEL_ID=custom (skills: mlx, ollama) ────────
-# If you let Moss embed (moss-minilm, the default), you don't need these.
-# mlx-embeddings>=0.0.3          # MLX embedding models (supply your own vectors to Moss)
+# ── Local embeddings — not used (Moss embeds via moss_core.PyEmbeddingService) ─
 
 # ── Shared utilities ────────────────────────────────────────────────────────────
 python-dotenv>=1.0              # load .env

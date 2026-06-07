@@ -6,13 +6,12 @@
 The ONE function every consumer programs to. Produces a single `screen_state` dict on
 EVERY exit path (§3b) — no prints, no sys.exit. Flow:
 
-    retriever.search → THRESHOLD GATE (stub-only; Moss gate=None) → chat_json (forced
+    retriever.search → THRESHOLD GATE (Moss: threshold=None, skipped) → chat_json (forced
     JSON) → validate cited ⊆ retrieved → assemble screen_state (all fields from metadata).
 
-Refusal mechanism is dual (G15): the deterministic gate fires only for the cosine stub
-(threshold=0.70); on the Moss path (threshold=None) refusal comes from the LLM task-match
-judgment, which is why the SYSTEM prompt below carries a load-bearing few-shot negative
-example. Copy it verbatim — it is what makes off-domain refusal reliable on a 3B.
+Refusal on Moss (threshold=None) comes from the LLM task-match judgment — the SYSTEM
+prompt below carries a load-bearing few-shot negative example. Copy it verbatim — it is
+what makes off-domain refusal reliable on a 3B.
 """
 import asyncio
 import json

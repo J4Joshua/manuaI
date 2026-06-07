@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Regression gate — the canonical demo beats on the STUB (offline, deterministic gate).
-Run after ANY corpus / threshold / prompt change (ARCHITECTURE.md G8). Exit 0 = all pass.
+"""Regression gate — the canonical demo beats on Moss.
+Run after ANY corpus / prompt change (ARCHITECTURE.md G8). Exit 0 = all pass.
 
     .venv/bin/python src/test_beats.py
 
-Uses CosineRetriever (no network). The two refusals fire at the deterministic gate;
-the two answers go through Qwen (temp 0) and must cite the expected SOP.
+Uses MossRetriever over data/moss_index.json (fully offline). Run moss_ingest.py
+after corpus changes. Refusals rely on the LLM task-match few-shot.
 """
 import asyncio
 import sys
 
 import core
-from retriever import CosineRetriever
+from retriever import make_retriever
 
 # (machine_id, query, expected_status, expected_sop_in_citations | None)
 BEATS = [
@@ -27,7 +27,7 @@ BEATS = [
 
 
 async def run():
-    retr = CosineRetriever()
+    retr = make_retriever()
     fails = 0
     for machine, q, want_status, want_sop in BEATS:
         s = await core.answer(q, machine, retr)

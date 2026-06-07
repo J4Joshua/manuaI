@@ -1,75 +1,56 @@
 #!/usr/bin/env python3
-"""Build the REAL Moss index from the shared corpus chunker (corpus.build_chunks),
-so the stub (index.json) and Moss hold IDENTICAL content + ids + metadata.
+"""Build the Moss-embedded local corpus index (data/moss_index.json).
 
-Online — create_index builds in the cloud (ARCHITECTURE.md §12a). Run with wifi ON:
+Embeds section-chunks from data/machines/*/sops/*.md with Moss's on-device
+embedder (PyEmbeddingService / moss-minilm by default). Fully offline — no Moss
+cloud calls. Run after adding or editing SOPs:
+
     .venv/bin/python src/moss_ingest.py
 
-Lets Moss embed (raw text in, model moss-minilm) per §12b. All metadata VALUES must be
-strings (Moss requirement) — safety_flag is "true"/"false", page is omitted (None).
-PDFs under data/.../manuals/ are Phase 4 (Unsiloed) — not ingested here.
+The output is consumed by MossRetriever (retriever.py) for cold-start retrieval.
 """
-import asyncio
-import os
+import json
 from pathlib import Path
 
-from inferedge_moss import DocumentInfo
-
 import corpus
-from retriever import load_env, make_client
-
-HERE = Path(__file__).resolve().parent
-
-
-def build_docs():
-    docs = []
-    for c in corpus.build_chunks():
-        docs.append(DocumentInfo(
-            id=c["id"],
-            text=c["text"],
-            metadata={
-                "machine_id": str(c["machine_id"]),
-                "sop_id": str(c["sop_id"]),
-                "doc_type": str(c["doc_type"]),
-                "procedure_title": str(c["procedure_title"]),
-                "section": str(c["section"]),
-                "safety_flag": "true" if c["safety_flag"] else "false",
-                "fault_codes": str(c.get("fault_codes", "")),
-            },
-        ))
-    return docs
+import moss_embed
+import paths
+from retriever import load_env
 
 
-async def main():
+def embed_and_write(chunks: list[dict]) -> Path:
+    """Embed chunks with Moss locally and write data/moss_index.json."""
     load_env()
-    client = make_client()
-    index = os.getenv("MOSS_INDEX_NAME", "manuals")
-    model = os.getenv("MOSS_MODEL_ID", "moss-minilm")
+    mid = moss_embed.model_id()
+    texts = [c["text"] for c in chunks]
+    print(f"embedding {len(texts)} chunks with {mid} (local, offline)…")
+    vectors = moss_embed.embed_texts(texts, mid)
+    dim = len(vectors[0]) if vectors else moss_embed.embed_dim(mid)
 
-    docs = build_docs()
-    by_machine = {}
-    for d in docs:
-        by_machine[d.metadata["machine_id"]] = by_machine.get(d.metadata["machine_id"], 0) + 1
-    print(f"built {len(docs)} section-chunks: {by_machine}")
-    for d in docs:
-        print(f"   {d.id:<28} [{d.metadata['machine_id']}] §={d.metadata['section']!r}")
+    records = []
+    for c, vec in zip(chunks, vectors):
+        rec = {k: v for k, v in c.items()}
+        rec["vector"] = vec
+        records.append(rec)
 
-    existing = {i.name for i in await client.list_indexes()}
-    if index in existing:
-        print(f"deleting existing '{index}'…")
-        await client.delete_index(index)
-    print(f"create_index('{index}', {len(docs)} docs, '{model}')…")
-    await client.create_index(index, docs, model)
-    for _ in range(45):
-        st = str(getattr(await client.get_index(index), "status", "?"))
-        if any(s in st.upper() for s in ("READY", "ACTIVE", "COMPLETE", "SUCCEED")):
-            print(f"index READY ({st})")
-            return
-        if "FAIL" in st.upper():
-            raise SystemExit(f"index build failed: {st}")
-        await asyncio.sleep(2)
-    print("warning: index not confirmed READY (continuing).")
+    out = paths.MOSS_INDEX_JSON
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"model_id": mid, "embed_dim": dim, "chunks": records}
+    with open(out, "w") as f:
+        json.dump(payload, f)
+
+    by = {}
+    for c in records:
+        by[c["machine_id"]] = by.get(c["machine_id"], 0) + 1
+    print(f"wrote {out.relative_to(paths.REPO)}: {len(records)} chunks  model={mid} dim={dim}")
+    for machine, n in sorted(by.items()):
+        print(f"   {machine:<16} {n}")
+    return out
+
+
+def main():
+    embed_and_write(corpus.build_chunks())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

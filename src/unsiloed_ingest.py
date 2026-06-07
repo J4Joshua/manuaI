@@ -45,7 +45,8 @@ import requests
 
 import corpus
 import paths
-from retriever import load_env, make_client
+from moss_ingest import embed_and_write
+from retriever import load_env
 
 # ── Constants ────────────────────────────────────────────────────────────────
 

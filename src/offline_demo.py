@@ -42,7 +42,7 @@ MODELS = paths.MODELS
 SCREEN_HTML = paths.WEB / "screen.html"
 
 # Load .env the same way voice_smoke.py does (retriever's stdlib loader).
-from retriever import CosineRetriever, load_env
+from retriever import make_retriever, load_env
 
 load_env()
 
@@ -296,14 +296,14 @@ def save_wav(audio: np.ndarray, path: str) -> None:
 # ---------------------------------------------------------------------------
 # Full STT → brain → TTS pipeline (shared by loop + selftest)
 # ---------------------------------------------------------------------------
-async def process_transcript(transcript: str, retriever: CosineRetriever) -> dict:
+async def process_transcript(transcript: str, retriever) -> dict:
     """Run core.answer and update LATEST. Returns the screen_state."""
     state = await core.answer(transcript, MACHINE_ID, retriever)
     _set_latest(state)
     return state
 
 
-def run_pipeline(transcript: str, retriever: CosineRetriever) -> dict:
+def run_pipeline(transcript: str, retriever) -> dict:
     """Sync wrapper: STT transcript → screen_state (updates LATEST + renders + speaks)."""
     state = asyncio.run(process_transcript(transcript, retriever))
     render(state)
@@ -316,7 +316,7 @@ def run_pipeline(transcript: str, retriever: CosineRetriever) -> dict:
 # ---------------------------------------------------------------------------
 def voice_loop() -> None:
     """The interactive demo loop. Runs until Ctrl-C."""
-    retriever = CosineRetriever()
+    retriever = make_retriever()
 
     # Confirm a default input device exists (informational only — demo may still work).
     try:
@@ -410,9 +410,13 @@ def selftest() -> int:
         return 1
 
     # -- Retriever --
-    print("\n[check] CosineRetriever…")
-    retriever = CosineRetriever()
-    print(f"  index size: {len(retriever.index)} chunks  ← OK")
+    print("\n[check] MossRetriever…")
+    try:
+        retriever = make_retriever()
+        print(f"  {len(retriever.index)} chunks loaded  ← OK")
+    except SystemExit as exc:
+        print(f"  FAIL — {exc}")
+        return 1
 
     # Helper: TTS → wav → STT → brain
     def _roundtrip(label: str, utterance: str) -> dict | None:
