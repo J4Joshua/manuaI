@@ -1,15 +1,21 @@
-# ManuAI
+# ManuAI 
+pronounced as /ˈmæn.ju.əl/
 
 **An offline-first voice copilot for the factory floor.** When a machine faults, an operator just asks out loud — *"the labeler on line 3 jammed, error E-42"* — and ManuAI **speaks back the right procedure and shows it on screen, cited to the exact SOP** — or, if there's no approved procedure, it **refuses and escalates** instead of guessing. It runs entirely on one Apple-Silicon box, **with the wifi physically off.**
 
 > Built for the Conversational AI Hackathon (Moss · F25).
 
+
+## Problem
+
+- Manufacturing companies lose hundreds of thousands of dollars per hour due to operator mistakes.
+- Operators have to refer to hundreds of SOPs, ManuAIs and tribal knowledge in chats
+
 ## Why it's different
 
-- **Offline-first.** Factory networks are spotty, locked down, and noisy; a fault-response copilot cannot fail because wifi drops. Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally. The headline demo works with the internet unplugged — nothing leaves the floor.
-- **Grounded or silent.** Every answer cites its source (`SOP-1187 §4.2`); if nothing in the corpus matches the task, it escalates to a supervisor rather than improvising. Safety-critical steps (lockout/tagout) surface *first*.
+- **Offline-first.** Factory networks are spotty, locked down, and noisy; a fault-response copilot cannot fail because wifi drops. Retrieval (Moss), Speech-to-text (Whisper), reasoning (Qwen via Ollama), retrieval, and text-to-speech (Kokoro) all run locally.
 - **Fast on-prem retrieval.** [Moss](https://www.moss.dev) gives local semantic search over the SOP corpus. In our demo benchmark, Moss warm retrieval was about **8× faster than our FAISS baseline** — roughly **5–7 ms vs. 40–55 ms** for the same class of workload.
-- **Corroborated by prior incidents.** A *second* Moss index of operator chat logs (ingested through the same Unsiloed pipeline) is retrieved in parallel and **cross-checks** the SOP answer against how similar past issues were actually resolved — surfaced as a "prior incidents" note. It's supplemental: chats are never cited and can never flip a refusal (see [docs/ARCHITECTURE.md §14](docs/ARCHITECTURE.md)). `src/ask.py --chats`.
+- **Corroborated by SOPs, ManuAIs and prior incidents.** A Moss index of SOPs, ManuAIs and operator chat logs (ingested through the same Unsiloed pipeline) is retrieved in parallel and **cross-checks** the SOP and ManuAI answer against how similar past issues were actually resolved — surfaced as a "prior incidents" note.
 
 ## Sponsor tech
 
