@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# local real-creds file (copied to .env at setup); has Moss key + HF token
+/env
 
 # Python
 __pycache__/

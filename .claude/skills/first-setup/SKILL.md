@@ -24,9 +24,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 Pulls livekit-agents, mlx-whisper, kokoro-onnx, inferedge-moss, etc. (a few minutes).
 
-## 3. livekit-server (only for the wifi-ON browser demo)
+## 3. System tools (Homebrew)
 ```bash
-brew install livekit          # provides `livekit-server`
+brew install ffmpeg portaudio   # ffmpeg = REQUIRED — mlx-whisper STT shells out to it (the offline_demo selftest in §7 fails without it: "No such file or directory: 'ffmpeg'"). portaudio = mic/speaker for sounddevice.
+brew install livekit            # provides `livekit-server` — only needed for the wifi-ON browser demo
 ```
 
 ## 4. `.env`
@@ -44,7 +45,12 @@ Gotchas that will bite:
 ```
 
 ## 6. Voice models (download once, then offline)
-Whisper auto-downloads on first STT run. Kokoro needs `models/kokoro-v1.0.onnx` + `models/voices-v1.0.bin` (the voice scripts fetch them on first run from the kokoro-onnx `model-files-v1.0` release; needs wifi once).
+Whisper auto-downloads on first STT run. Kokoro does **not** auto-download — the voice scripts `sys.exit()` with a "download manually" message if the files are missing. Fetch them once (needs wifi):
+```bash
+mkdir -p models
+curl -L -o models/kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
+curl -L -o models/voices-v1.0.bin  https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
+```
 
 ## 7. VERIFY — all must pass before declaring setup done
 ```bash
