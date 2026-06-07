@@ -50,7 +50,8 @@ from retriever import load_env, make_client
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _POLL_INTERVAL = 4       # seconds between status polls
-_POLL_TIMEOUT = 600      # 10 min per document (big manuals OCR slowly)
+# 10 min default per document; big manuals OCR slowly — override via env for large docs.
+_POLL_TIMEOUT = int(os.getenv("UNSILOED_POLL_TIMEOUT", "600"))
 _CREDITS_PER_PAGE = 5    # observed; for the cost estimate only
 
 # Force safety_flag=True when a chunk's text trips any of these (a wrong "safe"
@@ -173,10 +174,13 @@ def resolve_doc_meta(pdf_path: Path, manifest_index: dict, machine_arg: str | No
 def parse_document(pdf_path: Path, api_key: str, base_url: str, pages: str | None = None) -> dict:
     """POST /parse (multipart) → poll GET /parse/{job_id} until Succeeded.
     Returns the completed result dict (carries `chunks[]` — the Unsiloed chunking)."""
+    # High-res + table-merge are tuned for photographed/scanned factory SOPs. They are
+    # pure overhead on native-text PDFs (e.g. a 167-page error-code directory), where they
+    # make Unsiloed's segment-validation stage extremely slow. Override per-doc via env.
     data = {
-        "ocr_strategy": "auto_detection",     # force_ocr for photographed SOPs
-        "use_high_resolution": "true",        # better OCR on factory scans
-        "merge_tables": "true",               # keep cross-page spec tables whole
+        "ocr_strategy": os.getenv("UNSILOED_OCR_STRATEGY", "auto_detection"),  # force_ocr for photographed SOPs
+        "use_high_resolution": os.getenv("UNSILOED_HIGH_RES", "true"),         # set false for native-text docs
+        "merge_tables": os.getenv("UNSILOED_MERGE_TABLES", "true"),            # keep cross-page spec tables whole
         "export_format": '["markdown","json"]',
         "output_fields": '{"markdown": true, "content": true, "bbox": true, "confidence": true}',
     }
