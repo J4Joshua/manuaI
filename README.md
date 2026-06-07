@@ -29,7 +29,7 @@ ManuAI maps the sponsor technologies onto a simple factory-floor loop:
 
 - **Unsiloed** builds the knowledge base: messy SOP PDFs, manuAIs and chats become page-aware chunks, titles, error codes, safety flags, and citation metadata.
 - **Moss** retrieves that knowledge quickly on-prem. It also enables the context swarm: background agents prefetch related SOPs, LOTO context, safety steps, and prior incidents while the foreground agent answers the operator.
-- **Qwen** we used Qwen2.5-VL-3B-Instruct to create a short local answer, as well as convert first 3 seconds of video to context.
+- **Qwen** we used Qwen2.5-VL-3B-Instruct Ollama to create a short local answer, as well as convert first 3 seconds of video to context.
 
 
 ## Architecture
