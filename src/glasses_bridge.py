@@ -74,12 +74,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import http
+import http.server
 import json
 import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -98,6 +99,7 @@ from websockets.exceptions import ConnectionClosed
 # the `offline_demo` module object (and never modify offline_demo.py itself).
 import offline_demo
 from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
+from context_swarm import live_bubble_snapshot   # /state injects the live swarm bubble
 # Offline retrieval is the LocalMossRetriever (cosine over data/moss_index.json,
 # Moss-embedded) + a context swarm — both built via offline_demo.make_retriever /
 # offline_demo.get_swarm so the brain wiring is identical to the laptop demo.
