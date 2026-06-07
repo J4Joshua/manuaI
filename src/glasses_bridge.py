@@ -11,7 +11,7 @@ One process, two servers, two ports:
   • WebSocket (this module, `websockets` lib) on GLASSES_PORT (default 8766) — the
     glasses audio socket the iOS app dials.
   • offline_demo._start_http_server() on PORT (default 8000), in a daemon thread —
-    the operator console (GET / → operator.html?poll=1, GET /state → live screen_state).
+    the existing screen (GET / → screen.html, GET /state → live screen_state).
 
 The unmodified iOS app opens THREE WebSockets at startup plus an occasional POST.
 We satisfy all four so the app never errors / reconnect-loops, but only *act* on audio:
@@ -21,8 +21,10 @@ We satisfy all four so the app never errors / reconnect-loops, but only *act* on
                               mono PCM frames → streaming VAD → resample to 16 kHz →
                               transcribe_wav → run_pipeline (speaks on the laptop +
                               updates the screen).
-  ws  /publish                Video uplink. Accept, reply {"type":"video_off"} on
-                              connect, then drain & discard all JPEG/control frames.
+  ws  /publish                Ray-Ban live feed. Reply {"type":"video_on"} on connect,
+                              then store each JPEG as the latest frame, served to the
+                              operator UI as MJPEG at :8000/glasses.mjpeg (display-only —
+                              the brain is NOT fed video).
   ws  /agent-audio            Glasses-speaker downlink. Accept and idle — output is
                               the laptop, so we NEVER send anything back (locked: no
                               glasses-speaker downlink).
@@ -30,9 +32,10 @@ We satisfy all four so the app never errors / reconnect-loops, but only *act* on
                               harmlessly; it only fires on a user capture (out of
                               MVP scope) and never at startup.
 
-Scope is LOCKED (do not expand): audio-IN only; answer OUT on the laptop (speaker +
-screen). No glasses-speaker downlink, no video, no photo, no multi-turn/session —
-each utterance is an independent one-shot core.answer() via run_pipeline.
+Scope: audio-IN drives the answer OUT on the laptop (speaker + screen); the /publish
+video is relayed to the operator UI as a live feed (display-only — it does NOT feed the
+brain). No glasses-speaker downlink, no photo, no multi-turn/session — each utterance is
+an independent one-shot core.answer() via run_pipeline.
 
 ────────────────────────────────────────────────────────────────────────────────
 POST /publish/photo caveat (verified, deliberate)
@@ -72,11 +75,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http
+import http.server
 import json
 import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -95,6 +100,7 @@ from websockets.exceptions import ConnectionClosed
 # the `offline_demo` module object (and never modify offline_demo.py itself).
 import offline_demo
 from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
+from context_swarm import live_bubble_snapshot
 # Offline retrieval is the LocalMossRetriever (cosine over data/moss_index.json,
 # Moss-embedded) + a context swarm — both built via offline_demo.make_retriever /
 # offline_demo.get_swarm so the brain wiring is identical to the laptop demo.
@@ -106,6 +112,16 @@ from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
 # ---------------------------------------------------------------------------
 GLASSES_PORT = int(os.environ.get("GLASSES_PORT", 8766))   # matches the iOS app default
 GLASSES_HOST = os.environ.get("GLASSES_HOST", "0.0.0.0")   # all interfaces (phone on LAN)
+
+# Wired (usbmux) transport. The Mac is the CLIENT: it connects to the local usbmux
+# forwarder at WIRED_HOST:WIRED_PORT, which tunnels over the cable to the iOS app's
+# NWListener on DEVICE_LISTEN_PORT. Run:  pymobiledevice3 usbmux forward WIRED_PORT DEVICE_LISTEN_PORT
+WIRED_HOST = os.environ.get("WIRED_HOST", "127.0.0.1")                       # forwarder is local
+WIRED_PORT = int(os.environ.get("WIRED_PORT", GLASSES_PORT))                 # Mac-local audio forwarder port
+DEVICE_LISTEN_PORT = int(os.environ.get("DEVICE_LISTEN_PORT", GLASSES_PORT)) # iOS audio NWListener port
+# Stage 5 — optional video on a SECOND port (keeps JPEG bursts off the audio/VAD path).
+VIDEO_WIRED_PORT = int(os.environ.get("VIDEO_WIRED_PORT", 8767))             # Mac-local video forwarder port
+VIDEO_DEVICE_LISTEN_PORT = int(os.environ.get("VIDEO_DEVICE_LISTEN_PORT", 8767))  # iOS video NWListener port
 
 SAMPLE_RATE = offline_demo.SAMPLE_RATE      # 16000 — what Whisper wants
 BLOCK_SIZE = offline_demo.BLOCK_SIZE        # 512 @16k (~32 ms); scaled to in_rate below
@@ -144,6 +160,14 @@ _utterance_lock: asyncio.Lock | None = None   # serialise utterances (created in
 _speaking = False                              # True while a pipeline runs
 _cooldown_until = 0.0                          # loop.time() until which we keep dropping
 _tasks: set = set()                            # strong refs so dispatch tasks aren't GC'd mid-flight
+
+# Ray-Ban live feed: the latest JPEG from /publish. handle_publish writes it on the
+# asyncio loop; the screen server's /glasses.mjpeg reader runs in a separate daemon
+# thread. Copy the ref under _jpeg_lock, then write the socket OUTSIDE the lock so a
+# slow browser can never stall the (critical) audio loop.
+_latest_jpeg: bytes | None = None              # most recent JPEG frame
+_latest_jpeg_seq = 0                           # bumped each frame (MJPEG change-detection)
+_jpeg_lock = threading.Lock()
 
 
 def _log(msg: str) -> None:
@@ -363,13 +387,24 @@ async def handle_publish_audio(ws) -> None:
 
 
 async def handle_publish(ws) -> None:
-    """ws /publish — video uplink. Tell the glasses to stop sending video, then drain."""
+    """ws /publish — Ray-Ban live feed. Keep video ON, then store each JPEG frame as the
+    latest feed frame (served to the operator UI as MJPEG at :8000/glasses.mjpeg)."""
+    global _latest_jpeg, _latest_jpeg_seq
     try:
-        await ws.send(json.dumps({"type": "video_off"}))   # stop wasting BT bandwidth
-        async for _message in ws:
-            pass                                            # discard JPEG + control JSON
+        await ws.send(json.dumps({"type": "video_on"}))    # keep the live feed flowing
+        async for message in ws:
+            if isinstance(message, (bytes, bytearray)):
+                with _jpeg_lock:
+                    _latest_jpeg = bytes(message)
+                    _latest_jpeg_seq += 1
+            # text/control JSON: ignored (the brain is audio-only)
     except ConnectionClosed:
         pass
+    finally:
+        # Feed stopped → drop the last frame so the UI reverts to "pairing".
+        with _jpeg_lock:
+            _latest_jpeg = None
+            _latest_jpeg_seq += 1
 
 
 async def handle_agent_audio(ws) -> None:
@@ -458,6 +493,99 @@ async def _serve_forever() -> None:
         await asyncio.Future()   # run until cancelled
 
 
+# ---------------------------------------------------------------------------
+# Screen server — serves the operator console (operator.html?poll=1) driven by
+# the SAME offline_demo.LATEST the audio loop writes. The richer operator UI
+# polls /state over plain HTTP (no LiveKit), so it runs fully offline.
+# ---------------------------------------------------------------------------
+_WEB = offline_demo.SCREEN_HTML.parent                       # repo web/ dir
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+}
+
+
+class _ScreenHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):  # keep the bridge console clean
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _stream_mjpeg(self) -> None:
+        """Serve the Ray-Ban live feed as multipart/x-mixed-replace. Copy the latest JPEG
+        under the lock, write it OUTSIDE the lock, and exit cleanly when the browser
+        disconnects. ThreadingHTTPServer gives this its own daemon thread, so a
+        slow/blocked client never touches the audio loop or the other HTTP routes."""
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        last_seq = -1
+        try:
+            while True:
+                with _jpeg_lock:
+                    frame, seq = _latest_jpeg, _latest_jpeg_seq
+                if frame is not None and seq != last_seq:
+                    last_seq = seq
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
+                    self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(frame))
+                    self.wfile.write(frame)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                time.sleep(1.0 / 25.0)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # browser closed the feed
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/":
+            self.send_response(302)
+            self.send_header("Location", "/operator.html?poll=1")
+            self.end_headers()
+            return
+        if path == "/state":
+            st = offline_demo._get_latest()
+            st = {**st, "context_bubble": live_bubble_snapshot()}
+            self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
+            return
+        if path == "/glasses.jpg":                # latest Ray-Ban frame (debug / readiness)
+            with _jpeg_lock:
+                frame = _latest_jpeg
+            if frame is None:
+                self.send_error(503, "no frame yet")
+                return
+            self._send(200, frame, "image/jpeg")
+            return
+        if path == "/glasses.mjpeg":              # Ray-Ban live feed (operator UI <img>)
+            self._stream_mjpeg()
+            return
+        # Static files under web/ (operator.html, screen.html, static/*) — path-guarded.
+        rel = path.lstrip("/")
+        if rel in ("operator.html", "screen.html") or rel.startswith("static/"):
+            f = (_WEB / rel).resolve()
+            if str(f).startswith(str(_WEB.resolve())) and f.is_file():
+                self._send(200, f.read_bytes(),
+                           _CONTENT_TYPES.get(f.suffix, "application/octet-stream"))
+                return
+        self.send_error(404)
+
+
+def _start_screen_server() -> http.server.ThreadingHTTPServer:
+    """Serve operator.html?poll=1 + /state on PORT (8000) in a daemon thread."""
+    server = http.server.ThreadingHTTPServer(("", offline_demo.PORT), _ScreenHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def run_live() -> int:
     global _retriever, _swarm
     offline_demo.MODELS.mkdir(exist_ok=True)
@@ -466,14 +594,207 @@ def run_live() -> int:
     _install_turn_seq_stamp()
     _retriever = offline_demo.make_retriever()
     _swarm = offline_demo.get_swarm(_retriever, offline_demo._on_bubble_update)
-    offline_demo._start_http_server()
+    _start_screen_server()
     _log(f"index loaded: {len(_retriever.index)} chunks (corpus-wide retrieval)")
-    _log(f"operator console: http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
+    _log(f"screen (operator console): http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
     try:
         asyncio.run(_serve_forever())
     except KeyboardInterrupt:
         _log("bye.")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Wired transport (usbmux) — raw framed TCP. The iOS app is the SERVER (an NWListener);
+# the Mac is the CLIENT, reaching it through `pymobiledevice3 usbmux forward` over the
+# cable, so the bridge works with Wi-Fi + Cellular OFF. Frame = [1B type][4B big-endian
+# length][payload]: 0x00 = JSON text (the {"sampleRate":…} header / control), 0x01 = raw
+# Float32-LE mono PCM (the SAME bytes the WS path sends). Everything downstream (VAD →
+# run_pipeline → laptop speak + screen) is reused verbatim; only the audio transport
+# changes. See docs/usbmux-tunnel-plan.md.
+# ---------------------------------------------------------------------------
+FRAME_TEXT = 0x00
+FRAME_AUDIO = 0x01
+FRAME_JPEG = 0x02                    # Stage 5 video frame (Ray-Ban camera JPEG)
+MAX_WIRED_FRAME = 8 * 1024 * 1024   # sanity bound: reject a corrupt/huge length (trusted USB link)
+
+
+def _frame(mtype: int, payload: bytes) -> bytes:
+    return bytes((mtype,)) + len(payload).to_bytes(4, "big") + payload
+
+
+async def _read_frame(reader: asyncio.StreamReader):
+    head = await reader.readexactly(5)
+    length = int.from_bytes(head[1:5], "big")
+    if length > MAX_WIRED_FRAME:
+        raise ValueError(f"wired frame too large ({length} bytes) — corrupt stream")
+    payload = await reader.readexactly(length) if length else b""
+    return head[0], payload
+
+
+async def _wired_read(reader: asyncio.StreamReader) -> None:
+    """Consume framed messages from one wired connection: first text = header, then
+    Float32-LE audio frames → StreamingVAD → _dispatch_utterance. Same header→VAD→
+    pipeline logic as handle_publish_audio (incl. the echo/barge-in speaking-guard),
+    just sourced from a framed TCP stream instead of a WebSocket."""
+    global _speaking
+    loop = asyncio.get_running_loop()
+    in_rate: int | None = None
+    vad: StreamingVAD | None = None
+    while True:
+        mtype, payload = await _read_frame(reader)
+        if mtype == FRAME_TEXT:
+            if in_rate is not None:           # only the first text is the header
+                continue
+            try:
+                hdr = json.loads(payload.decode("utf-8"))
+                in_rate = int(hdr.get("sampleRate", 48000))
+                vad = StreamingVAD(in_rate)
+                _log(f"wired header: sampleRate={in_rate} channels={hdr.get('channels')}")
+            except (json.JSONDecodeError, ValueError, TypeError, UnicodeDecodeError):
+                _log(f"wired: ignoring non-header text {payload[:60]!r}")
+            continue
+        # FRAME_AUDIO — raw Float32-LE mono PCM.
+        if vad is None:                        # no header seen → assume 48 kHz (mirror WS path)
+            in_rate = 48000
+            vad = StreamingVAD(in_rate)
+            _log("wired: no header before first frame — assuming sampleRate=48000")
+        if _guarded(loop):                     # speaking-guard: drop & reset while busy
+            vad.reset()
+            continue
+        try:
+            frame = np.frombuffer(payload, dtype="<f4")
+        except ValueError:
+            continue
+        if frame.size == 0:
+            continue
+        segment = vad.feed(frame)
+        if segment is not None:
+            _speaking = True                   # engage guard synchronously, pre-task
+            task = asyncio.create_task(_dispatch_utterance(segment, in_rate))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
+
+
+async def _wired_connect_loop() -> None:
+    """Mac = client: (re)connect to the usbmux forwarder and pump audio until the cable
+    drops / the app backgrounds, then retry. The forwarder accepts immediately, but the
+    stream only carries data once the iOS app's NWListener is up, so an instant EOF just
+    means 'app not ready' — back off and retry."""
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(WIRED_HOST, WIRED_PORT)
+        except OSError as exc:
+            _log(f"wired: forwarder not reachable ({exc}); retrying in 1s — is "
+                 f"`pymobiledevice3 usbmux forward {WIRED_PORT} {DEVICE_LISTEN_PORT}` running?")
+            await asyncio.sleep(1.0)
+            continue
+        _log(f"wired: connected via forwarder {WIRED_HOST}:{WIRED_PORT}")
+        try:
+            await _wired_read(reader)
+        except (asyncio.IncompleteReadError, OSError, ValueError) as exc:
+            _log(f"wired: read ended ({type(exc).__name__}) — reconnecting")  # closed mid-frame / corrupt
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+        _log("wired: connection closed — retrying in 1s")
+        await asyncio.sleep(1.0)
+
+
+async def _wired_video_read(reader: asyncio.StreamReader) -> None:
+    """Read framed JPEG frames from the wired VIDEO uplink → the _latest_jpeg buffer that
+    /glasses.mjpeg already serves to the operator UI (display-only; the brain is audio)."""
+    global _latest_jpeg, _latest_jpeg_seq
+    while True:
+        mtype, payload = await _read_frame(reader)
+        if mtype == FRAME_JPEG and payload:
+            with _jpeg_lock:
+                _latest_jpeg = payload
+                _latest_jpeg_seq += 1
+
+
+async def _wired_video_connect_loop() -> None:
+    """Best-effort second wire (Stage 5): connect to the VIDEO forwarder and pump JPEG
+    frames into _latest_jpeg. Optional — if no video forwarder is running, this retries
+    quietly while the audio loop carries the demo."""
+    global _latest_jpeg, _latest_jpeg_seq
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(WIRED_HOST, VIDEO_WIRED_PORT)
+        except OSError:
+            await asyncio.sleep(2.0)          # quiet: video is optional, audio is the critical wire
+            continue
+        _log(f"wired video: connected via forwarder {WIRED_HOST}:{VIDEO_WIRED_PORT}")
+        try:
+            await _wired_video_read(reader)
+        except (asyncio.IncompleteReadError, OSError, ValueError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            with _jpeg_lock:                  # feed stopped → UI reverts to "pairing"
+                _latest_jpeg = None
+                _latest_jpeg_seq += 1
+        _log("wired video: connection closed — retrying")
+        await asyncio.sleep(1.0)
+
+
+async def _wired_main() -> None:
+    global _utterance_lock
+    _utterance_lock = asyncio.Lock()
+    # Audio is the critical wire; video (Stage 5) is best-effort on a second port.
+    await asyncio.gather(_wired_connect_loop(), _wired_video_connect_loop())
+
+
+def run_wired() -> int:
+    """Wired (usbmux) live mode. Same retriever/swarm/screen/pipeline as run_live; only
+    the audio transport changes. Run the forwarder in a separate terminal first:
+        pymobiledevice3 usbmux forward <WIRED_PORT> <DEVICE_LISTEN_PORT>
+    Then: Wi-Fi + Cellular OFF, Bluetooth ON (glasses), cable in — fully air-gapped."""
+    global _retriever, _swarm
+    offline_demo.MODELS.mkdir(exist_ok=True)
+    _install_speak_guard()
+    _install_turn_seq_stamp()
+    _retriever = offline_demo.make_retriever()
+    _swarm = offline_demo.get_swarm(_retriever, offline_demo._on_bubble_update)
+    _start_screen_server()
+    _log(f"index loaded: {len(_retriever.index)} chunks (corpus-wide retrieval)")
+    _log(f"screen (operator console): http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
+    _log(f"wired: separate terminal →  pymobiledevice3 usbmux forward {WIRED_PORT} {DEVICE_LISTEN_PORT}  (audio)")
+    _log(f"wired: optional video    →  pymobiledevice3 usbmux forward {VIDEO_WIRED_PORT} {VIDEO_DEVICE_LISTEN_PORT}  (Stage 5; camera mode)")
+    _log(f"wired: waiting for the glasses app (NWListener on device :{DEVICE_LISTEN_PORT})…")
+    try:
+        asyncio.run(_wired_main())
+    except KeyboardInterrupt:
+        _log("bye.")
+    return 0
+
+
+def probe_wired() -> int:
+    """Stage-1 make-or-break: connect through the forwarder and print the first framed
+    message the iOS app sends — proves usbmux delivers to the app's NWListener."""
+    async def _probe() -> int:
+        reader, writer = await asyncio.open_connection(WIRED_HOST, WIRED_PORT)
+        try:
+            mtype, payload = await asyncio.wait_for(_read_frame(reader), timeout=15)
+        finally:
+            writer.close()
+        kind = {FRAME_TEXT: "text", FRAME_AUDIO: "audio"}.get(mtype, f"0x{mtype:02x}")
+        print(f"PROBE OK — first frame: {kind} ({len(payload)} bytes): {payload[:200]!r}")
+        return 0
+    print(f"probe-wired: connecting to forwarder {WIRED_HOST}:{WIRED_PORT} — run "
+          f"`pymobiledevice3 usbmux forward {WIRED_PORT} {DEVICE_LISTEN_PORT}` first…")
+    try:
+        return asyncio.run(_probe())
+    except Exception as exc:  # noqa: BLE001
+        print(f"PROBE FAILED: {exc!r}")
+        return 1
 
 
 # ===========================================================================
@@ -606,18 +927,23 @@ async def _drive_beat(label, utterance, expect_status, expect_sop, *, stub) -> b
 
 
 async def _check_publish_endpoint() -> bool:
+    """Connect /publish → expect video_on, push a JPEG, then assert it round-trips to the
+    operator UI via the screen server's /glasses.jpg (the Ray-Ban live feed relay)."""
     uri = f"ws://127.0.0.1:{GLASSES_PORT}/publish"
+    jpeg = b"\xff\xd8\xff\xe0fake-jpeg-bytes\xff\xd9"
     try:
         async with websockets.connect(uri, max_size=MAX_WS_MESSAGE) as ws:
             msg = await asyncio.wait_for(ws.recv(), timeout=3)
-            ok = json.loads(msg).get("type") == "video_off"
-            await ws.send(b"\xff\xd8\xff\xe0fake-jpeg-bytes")   # drained & discarded
-            await ws.send(json.dumps({"type": "pause"}))
-            await asyncio.sleep(0.2)
+            ok = json.loads(msg).get("type") == "video_on"
+            await ws.send(jpeg)                                 # stored as the latest frame
+            await ws.send(json.dumps({"type": "pause"}))        # control JSON: ignored
+            await asyncio.sleep(0.3)
+            status, body = await asyncio.to_thread(_http_get, offline_demo.PORT, "/glasses.jpg")
+            ok = ok and status == 200 and body == jpeg
     except Exception as exc:  # noqa: BLE001
         print(f"  [/publish] error: {exc}  → {_FAIL}")
         return False
-    print(f"  [/publish] video_off on connect + drains JPEG  → {_PASS if ok else _FAIL}")
+    print(f"  [/publish] video_on + JPEG relays to /glasses.jpg  → {_PASS if ok else _FAIL}")
     return ok
 
 
@@ -761,7 +1087,7 @@ async def _run_suite(*, stub: bool) -> int:
     if stub:
         _install_wire_stubs()
     offline_demo.MODELS.mkdir(exist_ok=True)
-    offline_demo._start_http_server()
+    _start_screen_server()   # bridge _ScreenHandler — serves /glasses.jpg + /glasses.mjpeg
 
     results: list[bool] = []
     async with serve(_ws_handler, "127.0.0.1", GLASSES_PORT,
@@ -802,6 +1128,190 @@ def selftest(*, stub: bool) -> int:
     return asyncio.run(_run_suite(stub=stub))
 
 
+# --- Wired-path headless gate (raw-TCP framing + VAD + pipeline; no device, no models) ---
+async def _wired_phone_stream(writer: asyncio.StreamWriter, audio48k: np.ndarray,
+                              in_rate: int = 48000, frame_secs: float = 0.04) -> None:
+    """Fake-phone side (test only): send the framed header then Float32-LE audio frames."""
+    writer.write(_frame(FRAME_TEXT, json.dumps({"sampleRate": in_rate, "channels": 1}).encode()))
+    frame = max(1, int(frame_secs * in_rate))
+    for i in range(0, len(audio48k), frame):
+        writer.write(_frame(FRAME_AUDIO, audio48k[i:i + frame].astype("<f4").tobytes()))
+        await writer.drain()
+        await asyncio.sleep(0.003)
+
+
+async def _drive_wired_beat(label, audio48k, expect_status, expect_sop) -> bool:
+    """Stand up a loopback fake-phone server, have the bridge client read one beat through
+    the framing, and assert the stubbed pipeline's screen_state."""
+    offline_demo._set_latest(_idle_state())
+    _WIRE["last_wav"] = None
+    _WIRE["expect_status"] = expect_status
+    _WIRE["expect_sop"] = expect_sop
+
+    async def phone(reader, writer):
+        try:
+            await _wired_phone_stream(writer, audio48k)
+            await asyncio.sleep(0.4)
+        except (ConnectionResetError, BrokenPipeError, ConnectionError):
+            pass   # the bridge client closes as soon as it has the segment — expected
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(phone, "127.0.0.1", WIRED_PORT)
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", WIRED_PORT)
+        read_task = asyncio.create_task(_wired_read(reader))
+        state = await _await_state(15)
+        read_task.cancel()
+        try:
+            await read_task
+        except (asyncio.CancelledError, asyncio.IncompleteReadError, OSError, ValueError):
+            pass
+        writer.close()
+
+    cites = [c.get("sop_id") for c in state.get("citations", [])]
+    ok = state.get("status") == expect_status
+    if expect_sop:
+        ok = ok and expect_sop in cites
+    wav = _WIRE.get("last_wav")
+    wav_ok = bool(wav) and wav["rate"] == SAMPLE_RATE and wav["dur"] > 0.3
+    ok = ok and wav_ok
+    print(f"  [{label}] status={state.get('status')!r} cites={cites or '-'} | 16k-wav={wav}  → {_PASS if ok else _FAIL}")
+    await _await_guard_release()
+    return ok
+
+
+def _check_framing() -> bool:
+    """[type][len][payload] round-trips, and two frames parse back-to-back."""
+    payload = b'{"sampleRate":48000,"channels":1}'
+    blob = _frame(FRAME_TEXT, payload) + _frame(FRAME_AUDIO, b"\x00\x01\x02\x03")
+    ok = (blob[0] == FRAME_TEXT and int.from_bytes(blob[1:5], "big") == len(payload)
+          and blob[5:5 + len(payload)] == payload)
+    rest = blob[5 + len(payload):]
+    ok = ok and (rest[0] == FRAME_AUDIO and int.from_bytes(rest[1:5], "big") == 4
+                 and rest[5:9] == b"\x00\x01\x02\x03")
+    print(f"  [framing] [type][len][payload] round-trips back-to-back  → {_PASS if ok else _FAIL}")
+    return ok
+
+
+async def _wired_burst(audio48k: np.ndarray) -> None:
+    """One wired burst over its own short-lived loopback connection — probes the GLOBAL
+    speaking-guard across connections (the guard is process-wide, not per-socket)."""
+    async def phone(reader, writer):
+        try:
+            await _wired_phone_stream(writer, audio48k)
+            await asyncio.sleep(0.2)
+        except (ConnectionResetError, BrokenPipeError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+    server = await asyncio.start_server(phone, "127.0.0.1", WIRED_PORT)
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", WIRED_PORT)
+        read_task = asyncio.create_task(_wired_read(reader))
+        await asyncio.sleep(1.2)
+        read_task.cancel()
+        try:
+            await read_task
+        except (asyncio.CancelledError, asyncio.IncompleteReadError, OSError, ValueError):
+            pass
+        writer.close()
+
+
+async def _check_wired_speaking_guard() -> bool:
+    """Two wired bursts back-to-back: the 2nd lands inside the 1st's guard+cooldown window
+    and must be DROPPED — exactly one transcribe call. Mirrors the WS guard test for the
+    wired transport (which reuses _guarded/_dispatch_utterance verbatim)."""
+    _WIRE["transcribe_calls"] = 0
+    _WIRE["pipeline_sleep"] = 1.2            # widen the guarded window so burst 2 lands inside it
+    offline_demo._set_latest(_idle_state())
+    _WIRE["expect_status"] = "answered"
+    _WIRE["expect_sop"] = None
+    try:
+        await _wired_burst(_tone_fixture(1.2))
+        await _wired_burst(_tone_fixture(1.2))
+        await asyncio.sleep(SPEAK_COOLDOWN_SECS + 1.5)
+    finally:
+        _WIRE["pipeline_sleep"] = 0.0
+    calls = _WIRE.get("transcribe_calls", 0)
+    ok = calls == 1
+    print(f"  [guard] wired transcribe calls during guarded window = {calls} (want 1)  → {_PASS if ok else _FAIL}")
+    await _await_guard_release()
+    return ok
+
+
+async def _check_wired_video() -> bool:
+    """A framed JPEG over the wired VIDEO uplink lands in _latest_jpeg — the buffer
+    /glasses.mjpeg serves to the operator UI (Stage 5)."""
+    global _latest_jpeg
+    jpeg = b"\xff\xd8\xff\xe0wired-stage5-jpeg\xff\xd9"
+    with _jpeg_lock:
+        _latest_jpeg = None
+
+    async def phone(reader, writer):
+        try:
+            writer.write(_frame(FRAME_JPEG, jpeg))
+            await writer.drain()
+            await asyncio.sleep(0.3)
+        except (ConnectionResetError, BrokenPipeError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(phone, "127.0.0.1", VIDEO_WIRED_PORT)
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", VIDEO_WIRED_PORT)
+        read_task = asyncio.create_task(_wired_video_read(reader))
+        for _ in range(60):                       # wait for the frame to land in _latest_jpeg
+            with _jpeg_lock:
+                got = _latest_jpeg
+            if got == jpeg:
+                break
+            await asyncio.sleep(0.05)
+        read_task.cancel()
+        try:
+            await read_task
+        except (asyncio.CancelledError, asyncio.IncompleteReadError, OSError, ValueError):
+            pass
+        writer.close()
+
+    with _jpeg_lock:
+        ok = _latest_jpeg == jpeg
+    print(f"  [video] framed JPEG → _latest_jpeg (served by /glasses.mjpeg)  → {_PASS if ok else _FAIL}")
+    return ok
+
+
+async def _run_wired_suite() -> int:
+    global _utterance_lock
+    _utterance_lock = asyncio.Lock()
+    _install_speak_guard()
+    _install_wire_stubs()
+    offline_demo.MODELS.mkdir(exist_ok=True)
+    results: list[bool] = []
+    print("\n─── Wired Beat 1: JAM (→ answered + SOP-1187) ───")
+    results.append(await _drive_wired_beat("jam", _tone_fixture(), "answered", "SOP-1187"))
+    print("\n─── Wired Beat 2: BYPASS (→ escalated) ───")
+    results.append(await _drive_wired_beat("bypass", _tone_fixture(), "escalated", None))
+    print("\n─── Framing ───")
+    results.append(_check_framing())
+    print("\n─── Wired speaking-guard (echo/barge-in) ───")
+    results.append(await _check_wired_speaking_guard())
+    print("\n─── Wired video (Stage 5) ───")
+    results.append(await _check_wired_video())
+    all_pass = all(results)
+    print("\n" + "=" * 64)
+    print(f"glasses_bridge --selftest-wired: {'PASS' if all_pass else 'FAIL'}  ({sum(results)}/{len(results)} checks)")
+    print("=" * 64)
+    return 0 if all_pass else 1
+
+
+def selftest_wired() -> int:
+    print("=" * 64)
+    print("ManuAI glasses_bridge — WIRED TEST (headless: raw-TCP framing + VAD + pipeline, no models)")
+    print("=" * 64)
+    return asyncio.run(_run_wired_suite())
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -811,12 +1321,24 @@ def main() -> int:
                         help="Drive the two canonical beats through the WS path (full pipeline; LOCAL-MAC).")
     parser.add_argument("--selftest-wire", action="store_true",
                         help="Headless gate: WS framing + VAD + resample + 4 endpoints + speaking-guard, no models.")
+    parser.add_argument("--wired", action="store_true",
+                        help="Wired (usbmux) live mode: Mac connects to the local forwarder; the iOS app is the listener. Wi-Fi/Cellular OFF.")
+    parser.add_argument("--selftest-wired", action="store_true",
+                        help="Headless gate for the wired path: raw-TCP framing + VAD + pipeline over a loopback fake-phone, no models.")
+    parser.add_argument("--probe-wired", action="store_true",
+                        help="Stage-1 make-or-break: connect via the forwarder and print the first framed message from the app.")
     args = parser.parse_args()
 
     if args.selftest_wire:
         return selftest(stub=True)
+    if args.selftest_wired:
+        return selftest_wired()
+    if args.probe_wired:
+        return probe_wired()
     if args.selftest:
         return selftest(stub=False)
+    if args.wired:
+        return run_wired()
     return run_live()
 
 

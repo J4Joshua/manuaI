@@ -9,6 +9,7 @@
 import AVFoundation
 import MWDATCamera
 import MWDATCore
+import Network
 import Observation
 import SwiftUI
 
@@ -21,7 +22,17 @@ import SwiftUI
 //                     ws://172.20.10.x:8766  (no WAN — keeps the wifi-off headline)
 // Plaintext ws:// to these private ranges is allowed by NSAllowsLocalNetworking
 // (Info.plist) — no ATS change needed.
-private let streamPublishHost = "ws://172.17.23.71:8766"
+private let streamPublishHost = "ws://10.0.0.98:8766"
+
+// Wired (usbmux) transport — flip ON for the air-gapped USB demo (Wi-Fi + Cellular OFF,
+// Bluetooth ON for the glasses). When true, the audio-only path runs an NWListener TCP
+// SERVER on `wiredListenPort` and the Mac connects IN over the cable via
+// `pymobiledevice3 usbmux forward <local> <wiredListenPort>`, instead of dialing the
+// WebSocket above. The camera/video path still uses the WebSocket. Requires the device
+// paired/trusted with Developer Mode ON (iOS 16+). See docs/usbmux-tunnel-plan.md.
+private let wiredMode = true   // ON for the air-gapped USB demo (set false to use the WebSocket path)
+private let wiredListenPort: UInt16 = 8766
+private let wiredVideoPort: UInt16 = 8767     // Stage 5: Ray-Ban camera feed (camera streaming mode)
 
 private func publishURL(path: String) -> URL {
   URL(string: "\(streamPublishHost)\(path)")!
@@ -448,6 +459,391 @@ private final class AudioPublisher {
   }
 }
 
+/// Wired (usbmux) uplink: an NWListener TCP SERVER that the Mac connects INTO over the USB
+/// cable (via `pymobiledevice3 usbmux forward`), so the glasses mic works with Wi-Fi +
+/// Cellular OFF. The capture (HFP pin, Float32 mono, route/interruption handling) MIRRORS
+/// AudioPublisher and must be kept in sync by hand — only the transport differs: framed
+/// bytes over an NWConnection instead of a WebSocket. Frame = [1-byte type][4-byte
+/// big-endian length][payload]: 0x00 = JSON header, 0x01 = Float32-LE mono PCM (the SAME
+/// bytes AudioPublisher sends). See docs/usbmux-tunnel-plan.md.
+///
+/// NOTE: usbmux delivers the Mac's connection to the device as LOOPBACK, so the default
+/// all-interfaces NWListener accepts it; we deliberately do NOT restrict to 127.0.0.1.
+/// If NWListener ever refuses the usbmux connection, the documented fallback is a raw BSD
+/// socket / GCDAsyncSocket listener (PeerTalk's approach) — see the plan's Stage 1.
+private final class AudioUplinkServer {
+  private let queue = DispatchQueue(label: "audio.uplink.server")
+  private let engine = AVAudioEngine()
+  private var converter: AVAudioConverter?
+  private var targetFormat: AVAudioFormat?
+  private var listener: NWListener?
+  private var connection: NWConnection?
+  private var headerSent = false
+  private var sentChunks = 0
+  private var paused = false
+  private var configChangeObserver: NSObjectProtocol?
+  private var routeChangeObserver: NSObjectProtocol?
+  private var interruptionObserver: NSObjectProtocol?
+  private var mediaServicesLostObserver: NSObjectProtocol?
+  private var mediaServicesResetObserver: NSObjectProtocol?
+
+  private static let kText: UInt8 = 0x00
+  private static let kAudio: UInt8 = 0x01
+
+  func start(port: UInt16) {
+    queue.async {
+      self.stopLocked()
+      let params = NWParameters.tcp
+      params.allowLocalEndpointReuse = true
+      guard let nwPort = NWEndpoint.Port(rawValue: port),
+            let listener = try? NWListener(using: params, on: nwPort) else {
+        print("[AudioUplink] could not create NWListener on :\(port)")
+        return
+      }
+      self.listener = listener
+      listener.stateUpdateHandler = { state in
+        print("[AudioUplink] listener state: \(state)")
+      }
+      listener.newConnectionHandler = { [weak self] conn in
+        self?.queue.async { self?.accept(conn) }
+      }
+      listener.start(queue: self.queue)
+      print("[AudioUplink] listening on TCP :\(port) — waiting for the Mac via usbmux")
+    }
+  }
+
+  /// Caller runs on `queue`. One active uplink at a time: a new Mac connection replaces
+  /// the prior one and (re)starts capture once the connection is ready.
+  private func accept(_ conn: NWConnection) {
+    print("[AudioUplink] Mac connected")
+    connection?.cancel()
+    connection = conn
+    headerSent = false
+    sentChunks = 0
+    conn.stateUpdateHandler = { [weak self] state in
+      guard let self else { return }
+      self.queue.async {
+        guard self.connection === conn else { return }
+        switch state {
+        case .ready:
+          self.startCaptureLocked()
+        case .failed, .cancelled:
+          self.teardownCaptureLocked()
+        default:
+          break
+        }
+      }
+    }
+    conn.start(queue: queue)
+  }
+
+  func stop() {
+    queue.async { self.stopLocked() }
+  }
+
+  /// Caller runs on `queue`.
+  private func stopLocked() {
+    print("[AudioUplink] stop (chunks=\(sentChunks))")
+    teardownCaptureLocked()
+    connection?.cancel()
+    connection = nil
+    listener?.cancel()
+    listener = nil
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+  }
+
+  /// Caller runs on `queue`. Idempotent: clears any prior tap + observers first, so a
+  /// reconnecting Mac never double-installs or leaks the audio-session observers.
+  private func startCaptureLocked() {
+    teardownCaptureLocked()
+    headerSent = false
+    installTapAndStartEngine()
+    installSystemObservers()
+  }
+
+  /// Caller runs on `queue`.
+  private func teardownCaptureLocked() {
+    removeSystemObservers()
+    engine.inputNode.removeTap(onBus: 0)
+    if engine.isRunning { engine.stop() }
+  }
+
+  func pause() { queue.async { self.paused = true; print("[AudioUplink] pause") } }
+  func resume() { queue.async { self.paused = false; print("[AudioUplink] resume") } }
+
+  private func frame(_ type: UInt8, _ payload: Data) -> Data {
+    var out = Data([type])
+    var len = UInt32(payload.count).bigEndian
+    out.append(Data(bytes: &len, count: 4))
+    out.append(payload)
+    return out
+  }
+
+  /// Caller runs on `queue`.
+  private func sendFrame(_ type: UInt8, _ payload: Data) {
+    guard let conn = connection else { return }
+    conn.send(content: frame(type, payload), completion: .contentProcessed { error in
+      if let error { print("[AudioUplink] send error: \(error)") }
+    })
+  }
+
+  private func installTapAndStartEngine() {
+    let input = engine.inputNode
+    let inFormat = input.outputFormat(forBus: 0)
+    guard inFormat.sampleRate > 0 else {
+      print("[AudioUplink] input format not ready, sampleRate=\(inFormat.sampleRate)")
+      return
+    }
+    guard let outFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: inFormat.sampleRate,
+      channels: 1,
+      interleaved: false
+    ) else {
+      print("[AudioUplink] could not create output format")
+      return
+    }
+    targetFormat = outFormat
+    converter = AVAudioConverter(from: inFormat, to: outFormat)
+    headerSent = false
+
+    input.removeTap(onBus: 0)
+    input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
+      self?.handle(buffer)
+    }
+
+    do {
+      try engine.start()
+      print("[AudioUplink] engine started, sampleRate=\(inFormat.sampleRate) channels=\(inFormat.channelCount)")
+    } catch {
+      print("[AudioUplink] engine start error: \(error)")
+    }
+  }
+
+  private func installSystemObservers() {
+    let nc = NotificationCenter.default
+    configChangeObserver = nc.addObserver(
+      forName: .AVAudioEngineConfigurationChange,
+      object: engine,
+      queue: nil
+    ) { [weak self] _ in
+      guard let self else { return }
+      print("[AudioUplink] engine configuration changed — restarting tap")
+      self.queue.async {
+        self.engine.inputNode.removeTap(onBus: 0)
+        if self.engine.isRunning { self.engine.stop() }
+        self.installTapAndStartEngine()
+      }
+    }
+    routeChangeObserver = nc.addObserver(
+      forName: AVAudioSession.routeChangeNotification,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      let session = AVAudioSession.sharedInstance()
+      if let hfp = session.availableInputs?.first(where: { $0.portType == .bluetoothHFP }),
+         session.currentRoute.inputs.contains(where: { $0.portType == .bluetoothHFP }) == false {
+        try? session.setPreferredInput(hfp)
+        print("[AudioUplink] re-pinned input to \(hfp.portName)")
+        self?.queue.async {
+          guard let self else { return }
+          self.engine.inputNode.removeTap(onBus: 0)
+          if self.engine.isRunning { self.engine.stop() }
+          self.installTapAndStartEngine()
+        }
+      }
+    }
+    interruptionObserver = nc.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: nil
+    ) { [weak self] note in
+      guard let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
+        .flatMap(AVAudioSession.InterruptionType.init(rawValue:)) else { return }
+      guard let self else { return }
+      self.queue.async {
+        switch type {
+        case .began:
+          if self.engine.isRunning { self.engine.pause() }
+        case .ended:
+          let opts = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:))
+          if opts?.contains(.shouldResume) == true {
+            try? self.engine.start()
+          }
+        @unknown default: break
+        }
+      }
+    }
+    mediaServicesLostObserver = nc.addObserver(
+      forName: AVAudioSession.mediaServicesWereLostNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: nil
+    ) { _ in
+      print("[AudioUplink] media services were LOST")
+    }
+    mediaServicesResetObserver = nc.addObserver(
+      forName: AVAudioSession.mediaServicesWereResetNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: nil
+    ) { [weak self] _ in
+      print("[AudioUplink] media services were reset — rebuilding")
+      guard let self else { return }
+      self.queue.async {
+        AudioPublisher.configureAudioSession()
+        self.installTapAndStartEngine()
+      }
+    }
+  }
+
+  private func removeSystemObservers() {
+    let nc = NotificationCenter.default
+    if let o = configChangeObserver { nc.removeObserver(o) }
+    if let o = routeChangeObserver { nc.removeObserver(o) }
+    if let o = interruptionObserver { nc.removeObserver(o) }
+    if let o = mediaServicesLostObserver { nc.removeObserver(o) }
+    if let o = mediaServicesResetObserver { nc.removeObserver(o) }
+    configChangeObserver = nil
+    routeChangeObserver = nil
+    interruptionObserver = nil
+    mediaServicesLostObserver = nil
+    mediaServicesResetObserver = nil
+  }
+
+  private func handle(_ buffer: AVAudioPCMBuffer) {
+    queue.async {
+      guard self.connection != nil, let target = self.targetFormat else { return }
+
+      if !self.headerSent {
+        let header = "{\"sampleRate\":\(Int(target.sampleRate)),\"channels\":1}"
+        self.sendFrame(Self.kText, Data(header.utf8))
+        self.headerSent = true
+      }
+
+      if self.paused { return }
+
+      // Fast path: input already Float32 mono at the target rate — ship channel data.
+      let inFormat = buffer.format
+      let sameFormat = inFormat.commonFormat == .pcmFormatFloat32
+        && inFormat.channelCount == 1
+        && inFormat.sampleRate == target.sampleRate
+      if sameFormat, let channelData = buffer.floatChannelData?[0] {
+        let byteCount = Int(buffer.frameLength) * MemoryLayout<Float>.size
+        self.sendFrame(Self.kAudio, Data(bytes: channelData, count: byteCount))
+        self.sentChunks += 1
+        if self.sentChunks == 1 || self.sentChunks % 50 == 0 {
+          print("[AudioUplink] sent #\(self.sentChunks) bytes=\(byteCount)")
+        }
+        return
+      }
+
+      // Slow path: convert (multi-channel / different SR / Int16, etc.).
+      guard let converter = self.converter else { return }
+      let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / inFormat.sampleRate) + 64
+      guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
+      var error: NSError?
+      var supplied = false
+      let status = converter.convert(to: out, error: &error) { _, status in
+        if supplied {
+          status.pointee = .noDataNow   // do NOT signal .endOfStream — that retires the converter
+          return nil
+        }
+        supplied = true
+        status.pointee = .haveData
+        return buffer
+      }
+      if status == .error || out.frameLength == 0 {
+        print("[AudioUplink] convert produced no data status=\(status.rawValue) error=\(error?.localizedDescription ?? "nil")")
+        return
+      }
+      guard let channelData = out.floatChannelData?[0] else { return }
+      let byteCount = Int(out.frameLength) * MemoryLayout<Float>.size
+      self.sendFrame(Self.kAudio, Data(bytes: channelData, count: byteCount))
+      self.sentChunks += 1
+      if self.sentChunks == 1 || self.sentChunks % 50 == 0 {
+        print("[AudioUplink] sent #\(self.sentChunks) bytes=\(byteCount)")
+      }
+    }
+  }
+}
+
+/// Wired (usbmux) video uplink (Stage 5): an NWListener TCP server the Mac connects into
+/// over the cable for the Ray-Ban camera feed. `send(_:)` frames each JPEG as
+/// [0x02][big-endian len][jpeg]; the bridge stores the latest into the same `_latest_jpeg`
+/// buffer `/glasses.mjpeg` serves to the operator UI. The camera path pushes frames here in
+/// wiredMode instead of the `/publish` WebSocket. See docs/usbmux-tunnel-plan.md (Stage 5).
+private final class VideoUplinkServer {
+  private let queue = DispatchQueue(label: "video.uplink.server")
+  private var listener: NWListener?
+  private var connection: NWConnection?
+  private var sentCount = 0
+  private static let kJpeg: UInt8 = 0x02
+
+  func start(port: UInt16) {
+    queue.async {
+      self.stopLocked()
+      let params = NWParameters.tcp
+      params.allowLocalEndpointReuse = true
+      guard let nwPort = NWEndpoint.Port(rawValue: port),
+            let listener = try? NWListener(using: params, on: nwPort) else {
+        print("[VideoUplink] could not create NWListener on :\(port)")
+        return
+      }
+      self.listener = listener
+      listener.stateUpdateHandler = { state in print("[VideoUplink] listener state: \(state)") }
+      listener.newConnectionHandler = { [weak self] conn in self?.queue.async { self?.accept(conn) } }
+      listener.start(queue: self.queue)
+      print("[VideoUplink] listening on TCP :\(port) — waiting for the Mac via usbmux")
+    }
+  }
+
+  /// Caller runs on `queue`.
+  private func accept(_ conn: NWConnection) {
+    print("[VideoUplink] Mac connected")
+    connection?.cancel()
+    connection = conn
+    sentCount = 0
+    conn.stateUpdateHandler = { [weak self] state in
+      guard let self else { return }
+      switch state {
+      case .failed, .cancelled:
+        self.queue.async { if self.connection === conn { self.connection = nil } }
+      default:
+        break
+      }
+    }
+    conn.start(queue: queue)
+  }
+
+  /// Push one JPEG frame (from the camera frame callback). Dropped if no Mac is connected
+  /// yet — video frames are disposable.
+  func send(_ jpeg: Data) {
+    queue.async {
+      guard let conn = self.connection else { return }
+      var out = Data([Self.kJpeg])
+      var len = UInt32(jpeg.count).bigEndian
+      out.append(Data(bytes: &len, count: 4))
+      out.append(jpeg)
+      conn.send(content: out, completion: .contentProcessed { error in
+        if let error { print("[VideoUplink] send error: \(error)") }
+      })
+      self.sentCount += 1
+      if self.sentCount == 1 || self.sentCount % 30 == 0 {
+        print("[VideoUplink] sent #\(self.sentCount) bytes=\(jpeg.count)")
+      }
+    }
+  }
+
+  func stop() { queue.async { self.stopLocked() } }
+
+  /// Caller runs on `queue`.
+  private func stopLocked() {
+    connection?.cancel()
+    connection = nil
+    listener?.cancel()
+    listener = nil
+  }
+}
+
 /// Plays PCM frames received from the server-side voice agent. The
 /// server pushes Int16 LE PCM (24 kHz mono) after a JSON header. We schedule
 /// them on an AVAudioPlayerNode whose output routes via the shared
@@ -606,6 +1002,8 @@ final class StreamSessionViewModel {
   private var stream: MWDATCamera.Stream?
   private let publisher = StreamPublisher()
   private let audioPublisher = AudioPublisher()
+  private let audioUplink = AudioUplinkServer()   // wired (usbmux) mic uplink; used when wiredMode
+  private let videoUplink = VideoUplinkServer()   // wired (usbmux) camera uplink (Stage 5)
   private let agentPlayer = AgentAudioPlayer()
 
   private var stateListenerToken: AnyListenerToken?
@@ -665,6 +1063,8 @@ final class StreamSessionViewModel {
     clearListeners()
     publisher.stop()
     audioPublisher.stop()
+    audioUplink.stop()
+    videoUplink.stop()
     agentPlayer.stop()
     streamingStatus = .stopped
     isPaused = false
@@ -707,15 +1107,22 @@ final class StreamSessionViewModel {
   func startAudioOnly() {
     guard !audioOnlyActive, streamingStatus != .streaming else { return }
     AudioPublisher.configureAudioSession()
-    let audioURL = publishURL(path: "/publish-audio?agent=1")
-    print("[StreamSession] AUDIO-ONLY (camera-free) → \(audioURL)")
-    audioPublisher.start(url: audioURL)
+    if wiredMode {
+      // Air-gapped USB path: listen for the Mac (it dials in over the cable via usbmux).
+      print("[StreamSession] AUDIO-ONLY WIRED (usbmux) → NWListener :\(wiredListenPort)")
+      audioUplink.start(port: wiredListenPort)
+    } else {
+      let audioURL = publishURL(path: "/publish-audio?agent=1")
+      print("[StreamSession] AUDIO-ONLY (camera-free) → \(audioURL)")
+      audioPublisher.start(url: audioURL)
+    }
     audioOnlyActive = true
   }
 
   func stopAudioOnly() {
     guard audioOnlyActive else { return }
     audioPublisher.stop()
+    audioUplink.stop()
     audioOnlyActive = false
   }
 
@@ -725,6 +1132,8 @@ final class StreamSessionViewModel {
     clearListeners()
     publisher.stop()
     audioPublisher.stop()
+    audioUplink.stop()
+    videoUplink.stop()
     agentPlayer.stop()
     streamingStatus = .stopped
     isPaused = false
@@ -817,21 +1226,31 @@ final class StreamSessionViewModel {
     stream = newStream
     streamingStatus = .waiting
     setupListeners(for: newStream)
-    let videoURL = publishURL(path: "/publish")
-    print("[StreamSession] starting publisher → \(videoURL)")
-    publisher.start(url: videoURL)
-    await newStream.start()
+    if wiredMode {
+      // Air-gapped USB (Stage 5): camera JPEG + mic over NWListeners (the Mac dials in via
+      // usbmux). Forwarders: `pymobiledevice3 usbmux forward 8767 8767` (video) + `8766 8766`.
+      print("[StreamSession] CAMERA WIRED (usbmux) → video :\(wiredVideoPort), audio :\(wiredListenPort)")
+      videoUplink.start(port: wiredVideoPort)
+      await newStream.start()
+      AudioPublisher.configureAudioSession()
+      audioUplink.start(port: wiredListenPort)
+    } else {
+      let videoURL = publishURL(path: "/publish")
+      print("[StreamSession] starting publisher → \(videoURL)")
+      publisher.start(url: videoURL)
+      await newStream.start()
 
-    // Now bring up HFP and the audio publisher. The camera stream's BT
-    // Classic link is already established and won't be disturbed.
-    AudioPublisher.configureAudioSession()
-    let audioURL = publishURL(path: "/publish-audio?agent=1")
-    print("[StreamSession] starting audio publisher → \(audioURL)")
-    audioPublisher.start(url: audioURL)
+      // Now bring up HFP and the audio publisher. The camera stream's BT
+      // Classic link is already established and won't be disturbed.
+      AudioPublisher.configureAudioSession()
+      let audioURL = publishURL(path: "/publish-audio?agent=1")
+      print("[StreamSession] starting audio publisher → \(audioURL)")
+      audioPublisher.start(url: audioURL)
 
-    let agentURL = publishURL(path: "/agent-audio")
-    print("[StreamSession] starting agent player → \(agentURL)")
-    agentPlayer.start(url: agentURL)
+      let agentURL = publishURL(path: "/agent-audio")
+      print("[StreamSession] starting agent player → \(agentURL)")
+      agentPlayer.start(url: agentURL)
+    }
   }
 
   private func setupListeners(for stream: MWDATCamera.Stream) {
@@ -878,7 +1297,7 @@ final class StreamSessionViewModel {
         hasReceivedFirstFrame = true
       }
       if videoEnabled, let data = image.jpegData(compressionQuality: 0.5) {
-        publisher.send(data)
+        if wiredMode { videoUplink.send(data) } else { publisher.send(data) }
       }
     }
   }
