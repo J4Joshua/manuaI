@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 import core
 import paths
-from retriever import make_moss_retriever, load_env
+from retriever import make_retriever, load_env
 
 # Load .env so LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are available to
 # /token (reuses retriever's stdlib-only os.environ.setdefault loader; harmless if
@@ -46,7 +46,7 @@ try:
 except Exception:
     pass
 
-RETRIEVER = make_moss_retriever()
+RETRIEVER = make_retriever()
 
 SCREEN_HTML = paths.WEB / "screen.html"
 OPERATOR_HTML = paths.WEB / "operator.html"

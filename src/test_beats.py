@@ -4,14 +4,14 @@ Run after ANY corpus / prompt change (ARCHITECTURE.md G8). Exit 0 = all pass.
 
     .venv/bin/python src/test_beats.py
 
-Uses MossRetriever (needs wifi for load_index on first run). Refusals rely on the
-LLM task-match few-shot; answers go through Qwen (temp 0) and must cite the expected SOP.
+Uses LocalMossRetriever when data/moss_index.json exists (fully offline). Run
+moss_embed_local.py after corpus changes. Refusals rely on the LLM task-match few-shot.
 """
 import asyncio
 import sys
 
 import core
-from retriever import make_moss_retriever
+from retriever import make_retriever
 
 # (machine_id, query, expected_status, expected_sop_in_citations | None)
 BEATS = [
@@ -27,7 +27,7 @@ BEATS = [
 
 
 async def run():
-    retr = make_moss_retriever()
+    retr = make_retriever()
     fails = 0
     for machine, q, want_status, want_sop in BEATS:
         s = await core.answer(q, machine, retr)

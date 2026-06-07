@@ -33,7 +33,7 @@ import numpy as np
 import soundfile as sf
 
 # Load .env (stdlib-only loader from retriever) so WHISPER_MODEL / TTS_VOICE etc. apply.
-from retriever import make_moss_retriever, load_env
+from retriever import make_retriever, load_env
 
 load_env()
 
@@ -154,7 +154,7 @@ async def round_trip(label: str, utterance: str, retriever) -> dict:
 
 def main() -> int:
     MODELS.mkdir(exist_ok=True)
-    retriever = make_moss_retriever()
+    retriever = make_retriever()
 
     jam_state = asyncio.run(round_trip("JAM (covered → answered)", JAM_UTTERANCE, retriever))
     bypass_state = asyncio.run(

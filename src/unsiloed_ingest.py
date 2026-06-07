@@ -576,34 +576,8 @@ def _is_intentional_gap(doc_info):
     return any(kw in combined for kw in _INTENTIONAL_GAP_KEYWORDS)
 
 
-# ── Moss load (step 4) — reuses moss_ingest.py pattern ───────────────────────
-
-def _chunk_to_doc_info(c):
-    """
-    Convert a normalized corpus chunk to an inferedge_moss.DocumentInfo.
-    All metadata VALUES must be strings (Moss requirement — see moss_ingest.py).
-    page is passed as a string ("" when None) because Moss requires all-string metadata;
-    the retriever.py MossRetriever hardcodes page=None on return — store for completeness.
-    """
-    from inferedge_moss import DocumentInfo  # local import — not needed for --dry-run
-
-    return DocumentInfo(
-        id=c["id"],
-        text=c["text"],
-        metadata={
-            "machine_id":      str(c["machine_id"]),
-            "sop_id":          str(c["sop_id"]),
-            "doc_type":        str(c["doc_type"]),
-            "procedure_title": str(c["procedure_title"]),
-            "section":         str(c["section"]),
-            "safety_flag":     "true" if c["safety_flag"] else "false",
-            "fault_codes":     str(c.get("fault_codes", "")),
-            "page":            str(c["page"]) if c["page"] is not None else "",
-        },
-    )
-
-
-async def load_into_moss(all_chunks):
+import moss_corpus
+import moss_embed
     """
     Build (or rebuild) the Moss index from the union of:
       • hand-authored SOP chunks (corpus.build_chunks())
@@ -617,15 +591,19 @@ async def load_into_moss(all_chunks):
     load_env()
     client = make_client()
     index = os.getenv("MOSS_INDEX_NAME", "manuals")
-    model = os.getenv("MOSS_MODEL_ID", "moss-minilm")
 
-    # Union: SOP chunks first, then Unsiloed PDF chunks.
-    sop_docs = []
-    for c in corpus.build_chunks():
-        sop_docs.append(_chunk_to_doc_info(c))
-
-    pdf_docs = [_chunk_to_doc_info(c) for c in all_chunks]
-    all_docs = sop_docs + pdf_docs
+    sop_chunks = corpus.build_chunks()
+    all_chunk_dicts = sop_chunks + list(all_chunks)
+    texts = [c["text"] for c in all_chunk_dicts]
+    mid = moss_embed.model_id()
+    print(f"Embedding {len(texts)} chunks locally with {mid}…")
+    vectors = moss_embed.embed_texts(texts, mid)
+    all_docs = [
+        moss_corpus.chunk_to_doc_info(c, vec)
+        for c, vec in zip(all_chunk_dicts, vectors)
+    ]
+    sop_docs = all_docs[: len(sop_chunks)]
+    pdf_docs = all_docs[len(sop_chunks) :]
 
     by_machine = {}
     for d in all_docs:
@@ -644,9 +622,8 @@ async def load_into_moss(all_chunks):
         print(f"Deleting existing '{index}' index…")
         await client.delete_index(index)
 
-    print(f"create_index('{index}', {len(all_docs)} docs, model='{model}')…")
-    # TODO(needs-api-key): This is the cloud build step (wifi required).
-    await client.create_index(index, all_docs, model)
+    print(f"create_index('{index}', {len(all_docs)} docs, model='custom')…")
+    await client.create_index(index, all_docs, "custom")
 
     # Poll until READY (mirrors moss_ingest.py poll pattern).
     for _ in range(45):

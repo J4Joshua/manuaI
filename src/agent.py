@@ -90,7 +90,7 @@ import numpy as np
 # Load .env BEFORE importing anything that reads env-vars (reuse retriever's
 # stdlib-only loader — no python-dotenv needed; it is os.environ.setdefault).
 # ---------------------------------------------------------------------------
-from retriever import make_moss_retriever, load_env
+from retriever import make_retriever, load_env
 
 load_env()
 
@@ -339,8 +339,10 @@ class KokoroChunkedStream(tts_mod.ChunkedStream):
 # Retriever factory (constructed once per session, reused across turns)
 # ---------------------------------------------------------------------------
 def _make_retriever():
-    logger.info("Retriever: Moss (load_index runs on first search; keep wifi ON)")
-    return make_moss_retriever()
+    retr = make_retriever()
+    kind = type(retr).__name__
+    logger.info("Retriever: %s", kind)
+    return retr
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +553,7 @@ def _check() -> int:
     print(f"  VAD  : {type(vad).__name__} OK")
     session = _build_session()
     print(f"  SESSION: {type(session).__name__} (turn_handling=manual) OK")
-    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=make_moss_retriever())
+    agent = ManuAIAgent(machine_id=MACHINE_ID, retriever=make_retriever())
     print(f"  AGENT: {type(agent).__name__} (machine_id={MACHINE_ID!r}) OK")
     # Confirm the AgentServer constructed and is bound to the local URL.
     print(f"  SERVER: {type(server).__name__} ws_url={LIVEKIT_URL!r} OK")

@@ -4,7 +4,7 @@
     .venv/bin/python src/ask.py "the labeler on line 3 jammed and shows error E-42"
     .venv/bin/python src/ask.py --machine cobot-cellA "robot in cell A shows fault C4"
 
-Uses MossRetriever — load_index is the one network step (wifi ON for first query).
+Uses make_retriever() — prefers data/moss_index.json (offline) when present.
 """
 import argparse
 import asyncio
@@ -12,7 +12,7 @@ import os
 
 import core
 import render
-from retriever import make_moss_retriever
+from retriever import make_retriever
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
     ap.add_argument("--machine", default=os.getenv("MACHINE_ID", "labeler-line3"))
     args = ap.parse_args()
 
-    retriever = make_moss_retriever()
+    retriever = make_retriever()
     state = asyncio.run(core.answer(args.question, args.machine, retriever))
     render.render(state)
 

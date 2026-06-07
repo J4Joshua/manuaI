@@ -11,4 +11,5 @@ REPO = Path(__file__).resolve().parent.parent   # repo root = src/'s parent
 DATA = REPO / "data"
 WEB = REPO / "web"
 MODELS = REPO / "models"
+MOSS_INDEX_JSON = DATA / "moss_index.json"
 ENV_FILE = REPO / ".env"

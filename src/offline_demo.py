@@ -42,7 +42,7 @@ MODELS = paths.MODELS
 SCREEN_HTML = paths.WEB / "screen.html"
 
 # Load .env the same way voice_smoke.py does (retriever's stdlib loader).
-from retriever import make_moss_retriever, load_env
+from retriever import make_retriever, load_env
 
 load_env()
 
@@ -316,7 +316,7 @@ def run_pipeline(transcript: str, retriever) -> dict:
 # ---------------------------------------------------------------------------
 def voice_loop() -> None:
     """The interactive demo loop. Runs until Ctrl-C."""
-    retriever = make_moss_retriever()
+    retriever = make_retriever()
 
     # Confirm a default input device exists (informational only — demo may still work).
     try:
@@ -410,14 +410,17 @@ def selftest() -> int:
         return 1
 
     # -- Retriever --
-    print("\n[check] MossRetriever…")
-    retriever = make_moss_retriever()
+    print("\n[check] retriever…")
     try:
-        asyncio.run(retriever.ensure_loaded())
-        print(f"  index {retriever.index!r} loaded  ← OK")
-    except Exception as exc:
+        retriever = make_retriever()
+    except SystemExit as exc:
         print(f"  FAIL — {exc}")
         return 1
+    if hasattr(retriever, "index") and isinstance(retriever.index, list):
+        print(f"  {type(retriever).__name__}: {len(retriever.index)} chunks  ← OK")
+    else:
+        asyncio.run(retriever.ensure_loaded())
+        print(f"  {type(retriever).__name__}: index {retriever.index!r} loaded  ← OK")
 
     # Helper: TTS → wav → STT → brain
     def _roundtrip(label: str, utterance: str) -> dict | None:
