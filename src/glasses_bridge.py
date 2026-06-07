@@ -11,7 +11,7 @@ One process, two servers, two ports:
   • WebSocket (this module, `websockets` lib) on GLASSES_PORT (default 8766) — the
     glasses audio socket the iOS app dials.
   • offline_demo._start_http_server() on PORT (default 8000), in a daemon thread —
-    the existing screen (GET / → screen.html, GET /state → live screen_state).
+    the operator console (GET / → operator.html?poll=1, GET /state → live screen_state).
 
 The unmodified iOS app opens THREE WebSockets at startup plus an occasional POST.
 We satisfy all four so the app never errors / reconnect-loops, but only *act* on audio:
@@ -72,13 +72,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http
-import http.server
 import json
 import logging
 import os
 import sys
 import tempfile
-import threading
 import time
 from urllib.parse import urlparse
 
@@ -97,7 +95,6 @@ from websockets.exceptions import ConnectionClosed
 # the `offline_demo` module object (and never modify offline_demo.py itself).
 import offline_demo
 from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
-from context_swarm import live_bubble_snapshot
 # Offline retrieval is the LocalMossRetriever (cosine over data/moss_index.json,
 # Moss-embedded) + a context swarm — both built via offline_demo.make_retriever /
 # offline_demo.get_swarm so the brain wiring is identical to the laptop demo.
@@ -461,62 +458,6 @@ async def _serve_forever() -> None:
         await asyncio.Future()   # run until cancelled
 
 
-# ---------------------------------------------------------------------------
-# Screen server — serves the operator console (operator.html?poll=1) driven by
-# the SAME offline_demo.LATEST the audio loop writes. The richer operator UI
-# polls /state over plain HTTP (no LiveKit), so it runs fully offline.
-# ---------------------------------------------------------------------------
-_WEB = offline_demo.SCREEN_HTML.parent                       # repo web/ dir
-_CONTENT_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript",
-    ".css": "text/css",
-    ".json": "application/json",
-}
-
-
-class _ScreenHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a):  # keep the bridge console clean
-        pass
-
-    def _send(self, code: int, body: bytes, ctype: str) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/":
-            self.send_response(302)
-            self.send_header("Location", "/operator.html?poll=1")
-            self.end_headers()
-            return
-        if path == "/state":
-            st = offline_demo._get_latest()
-            st = {**st, "context_bubble": live_bubble_snapshot()}
-            self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
-            return
-        # Static files under web/ (operator.html, screen.html, static/*) — path-guarded.
-        rel = path.lstrip("/")
-        if rel in ("operator.html", "screen.html") or rel.startswith("static/"):
-            f = (_WEB / rel).resolve()
-            if str(f).startswith(str(_WEB.resolve())) and f.is_file():
-                self._send(200, f.read_bytes(),
-                           _CONTENT_TYPES.get(f.suffix, "application/octet-stream"))
-                return
-        self.send_error(404)
-
-
-def _start_screen_server() -> http.server.ThreadingHTTPServer:
-    """Serve operator.html?poll=1 + /state on PORT (8000) in a daemon thread."""
-    server = http.server.ThreadingHTTPServer(("", offline_demo.PORT), _ScreenHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
-
-
 def run_live() -> int:
     global _retriever, _swarm
     offline_demo.MODELS.mkdir(exist_ok=True)
@@ -525,9 +466,9 @@ def run_live() -> int:
     _install_turn_seq_stamp()
     _retriever = offline_demo.make_retriever()
     _swarm = offline_demo.get_swarm(_retriever, offline_demo._on_bubble_update)
-    _start_screen_server()
+    offline_demo._start_http_server()
     _log(f"index loaded: {len(_retriever.index)} chunks (corpus-wide retrieval)")
-    _log(f"screen (operator console): http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
+    _log(f"operator console: http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
     try:
         asyncio.run(_serve_forever())
     except KeyboardInterrupt:

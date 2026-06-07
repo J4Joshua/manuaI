@@ -151,6 +151,9 @@ async def answer(
     flip a refusal (ARCHITECTURE.md §3d).
     swarm (optional) = background Moss context prefetch; supplemental chunks merged into
     the LLM prompt after the primary retrieval."""
+    if swarm:
+        await swarm.reset_for_question()
+
     threshold = retriever.threshold
 
     # Two simultaneous, source-separated retrievals: SOPs (authoritative) + chats (supplemental).

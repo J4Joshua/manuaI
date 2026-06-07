@@ -21,7 +21,7 @@ import SwiftUI
 //                     ws://172.20.10.x:8766  (no WAN — keeps the wifi-off headline)
 // Plaintext ws:// to these private ranges is allowed by NSAllowsLocalNetworking
 // (Info.plist) — no ATS change needed.
-private let streamPublishHost = "ws://10.0.0.98:8766"
+private let streamPublishHost = "ws://172.17.23.71:8766"
 
 private func publishURL(path: String) -> URL {
   URL(string: "\(streamPublishHost)\(path)")!

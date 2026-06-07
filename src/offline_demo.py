@@ -3,8 +3,8 @@
 
 Single process:
   1. Tiny stdlib HTTP server in a daemon thread serving:
-       GET /       → screen.html (verbatim, same file server.py uses)
-       GET /state  → current screen_state JSON (polled ~600ms by screen.html)
+       GET /       → redirect to operator.html?poll=1 (operator console, HTTP poll)
+       GET /state  → current screen_state JSON (polled ~600ms by operator.js)
   2. Voice loop (main thread):
        Press Enter → record mic (silence-VAD; speech-start + trailing-silence stop;
        hard cap 15 s) → mlx_whisper STT → core.answer → update LATEST → render to
@@ -39,7 +39,14 @@ import soundfile as sf
 import paths
 
 MODELS = paths.MODELS
-SCREEN_HTML = paths.WEB / "screen.html"
+WEB = paths.WEB
+SCREEN_HTML = WEB / "screen.html"
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+}
 
 # Load .env the same way voice_smoke.py does (retriever's stdlib loader).
 from retriever import make_retriever, load_env
@@ -131,26 +138,18 @@ def _get_latest() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTTP server (daemon thread) — serves screen.html + /state JSON
+# HTTP server (daemon thread) — operator console + /state JSON (poll mode)
 # ---------------------------------------------------------------------------
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # suppress request logs; only errors go to stderr
         pass
 
-    def _send_json(self, data: dict, code: int = 200) -> None:
-        body = json.dumps(data).encode()
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_html(self, path: Path, code: int = 200) -> None:
-        body = path.read_bytes()
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -158,10 +157,9 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
 
         if path == "/":
-            if not SCREEN_HTML.exists():
-                self.send_error(404, "screen.html not found")
-                return
-            self._send_html(SCREEN_HTML)
+            self.send_response(302)
+            self.send_header("Location", "/operator.html?poll=1")
+            self.end_headers()
             return
 
         if path == "/state":
@@ -170,8 +168,19 @@ class _Handler(BaseHTTPRequestHandler):
                 **state,
                 "context_bubble": live_bubble_snapshot(),
             }
-            self._send_json(state)
+            self._send(200, json.dumps(state).encode(), _CONTENT_TYPES[".json"])
             return
+
+        rel = path.lstrip("/")
+        if rel in ("operator.html", "screen.html") or rel.startswith("static/"):
+            f = (WEB / rel).resolve()
+            if str(f).startswith(str(WEB.resolve())) and f.is_file():
+                self._send(
+                    200,
+                    f.read_bytes(),
+                    _CONTENT_TYPES.get(f.suffix, "application/octet-stream"),
+                )
+                return
 
         self.send_error(404)
 
@@ -337,6 +346,13 @@ def save_wav(audio: np.ndarray, path: str) -> None:
 # ---------------------------------------------------------------------------
 async def process_transcript(transcript: str, retriever, swarm) -> dict:
     """Run core.answer and update LATEST. Returns the screen_state."""
+    _set_latest({
+        **_get_latest(),
+        "question": transcript,
+        "status": "thinking",
+        "answer": "",
+        "context_bubble": empty_bubble(),
+    })
     state = await core.answer(transcript, retriever, swarm=swarm)
     state = with_bubble(state, swarm)
     _set_latest(state)
@@ -370,7 +386,7 @@ def voice_loop() -> None:
     except Exception as exc:
         print(f"[audio] WARNING: could not query default input device: {exc}")
 
-    print(f"\nManuAI offline demo  —  http://localhost:{PORT}/")
+    print(f"\nManuAI offline demo  —  http://localhost:{PORT}/  →  operator console")
     print("─" * 60)
     print("Press Enter, then speak. Recording stops after ~1.2 s of silence.")
     print("Ctrl-C to exit.")
@@ -565,9 +581,9 @@ def selftest() -> int:
     try:
         with _urllib.urlopen(f"http://localhost:{PORT}/", timeout=5) as resp:
             html = resp.read()
-        html_ok = b"ManuAI" in html and b"applyState" in html
+        html_ok = b"ManuAI" in html and b"operator.js" in html
         print(f"  GET /: len={len(html)} bytes  ManuAI in HTML={b'ManuAI' in html}  "
-              f"applyState present={b'applyState' in html}  → {_PASS if html_ok else _FAIL}")
+              f"operator.js present={b'operator.js' in html}  → {_PASS if html_ok else _FAIL}")
         if not html_ok:
             http_ok = False
     except Exception as exc:
@@ -603,7 +619,7 @@ def main() -> int:
 
     # Live demo: start HTTP server, run voice loop.
     _start_http_server()
-    print(f"Screen live at: http://localhost:{PORT}/")
+    print(f"Operator console: http://localhost:{PORT}/  →  operator.html?poll=1")
     try:
         voice_loop()
     except KeyboardInterrupt:
