@@ -5,11 +5,11 @@ description: The continuous-development workflow for ManuAI — a start-of-sessi
 
 # Dev workflow — ManuAI
 
-Assumes setup is done (run `/first-setup` if not). `CLAUDE.md` has the mental model.
+Assumes setup is done (run `/first-setup` if not). `AGENTS.md` has the mental model.
 
 ## Health check (start of session)
 ```bash
-curl -s localhost:11434/api/tags        # Ollama up, qwen2.5:3b present
+curl -s localhost:11434/api/tags        # Ollama up, qwen2.5:3b + nomic-embed-text present
 .venv/bin/python src/test_beats.py      # -> ALL BEATS PASS   (if red, fix BEFORE changing anything)
 ```
 
@@ -25,15 +25,15 @@ curl -s localhost:11434/api/tags        # Ollama up, qwen2.5:3b present
 3. Commit messages end with the `Co-Authored-By` trailer. Commit only verified steps; don't push to `main` without explicit OK.
 
 ## Recipes (common tasks)
-- **Add / edit an SOP:** drop a `.md` (with the SOP frontmatter — see `data/machines/*/sops/*.md`) under `data/machines/<id>/sops/`, then `.venv/bin/python src/moss_ingest.py` (rebuilds `data/moss_index.json`). Re-run `test_beats.py`. **Never** add a doc covering a `data/manifest.json → intentional_gaps` query (it kills the refusal beat).
+- **Add / edit an SOP:** drop a `.md` (with the SOP frontmatter — see `data/machines/*/sops/*.md`) under `data/machines/<id>/sops/`, then `src/ingest_local.py` (and `src/moss_ingest.py` for the Moss index). **Re-tune the `0.70` threshold (`src/core.py`) + re-run `test_beats.py`** — it's a *window*: pass jam/cobot, reject off-domain (servo), and let the bypass query through to a *cited policy refusal*. **Never** add a doc covering a `data/manifest.json → intentional_gaps` query (it kills the refusal beat).
 - **Change answer / refuse behavior:** edit `SYSTEM` in `src/core.py`. The off-domain refusal depends on the **task-match few-shot** there — keep it. Re-run `test_beats.py`.
 - **Tweak the screen:** edit `web/screen.html`'s `applyState()` — it's reused VERBATIM by `operator.html` over the LiveKit data channel, so one edit updates **both** modes. Keep logic out of the UI; it only renders `screen_state`.
-- **Add a retriever:** implement the seam in `src/retriever.py` — `async search(question, machine_id, k) -> [record]` + class attr `threshold`. Moss offline path uses `threshold=None` (refusal via the LLM few-shot).
+- **Add a retriever:** implement the seam in `src/retriever.py` — `async search(question, machine_id, k) -> [record]` + class attr `threshold`. Moss `.score` is per-query normalized → `threshold=None` (refusal via the LLM few-shot); raw cosine (stub) → a real numeric gate.
 - **Offline guarantees:** `WHISPER_MODEL` needs the `-mlx` suffix; keep `HF_TOKEN` blank; export `HF_HUB_OFFLINE=1` for a guaranteed-offline run once models are cached.
 
 ## Respect these (don't fork the contracts — full detail in `docs/ARCHITECTURE.md` gap register)
-- **`screen_state`** and the **chunk schema** are shared by retriever and both UIs.
-- WebRTC can't go offline → `offline_demo.py` is the wifi-off path (G16). Moss embed + retrieve is fully local via `data/moss_index.json` (G15 refusal = LLM few-shot).
+- **`screen_state`** and the **chunk schema** are shared by both retrievers and both UIs.
+- WebRTC can't go offline → `offline_demo.py` is the wifi-off path (G16). Moss is cloud-anchored → the **stub** is the offline brain (G14). The Moss gate is disabled by design (G15).
 
 ## Map
-`src/` code · `web/` UI · `data/` SOP corpus · **`docs/ARCHITECTURE.md`** (contracts + gap register) · `docs/TODO.md` (status) · `docs/phases/` (per-phase goals + tests) · `CLAUDE.md` (always-loaded summary).
+`src/` code · `web/` UI · `data/` SOP corpus · **`docs/ARCHITECTURE.md`** (contracts + gap register) · `docs/TODO.md` (status) · `docs/phases/` (per-phase goals + tests) · `AGENTS.md` (always-loaded summary).

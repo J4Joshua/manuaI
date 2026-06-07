@@ -5,6 +5,8 @@ locally-bundled livekit-client JS, and LiveKit access tokens.
 Routes:
     GET /              → screen.html (Phase 2 HTTP-poll screen — unchanged)
     GET /state         → LATEST screen_state as JSON (polled by screen.html ~600ms)
+    GET /context/refresh?machine=...&q=...
+                       → force one Moss context-swarm pass → JSON screen_state
     GET /ask?q=...&machine=...
                        → core.answer(q, machine, MossRetriever) → set LATEST → JSON
     GET /operator.html → operator.html (Phase 3 unified voice + live screen)   [NEW]
@@ -256,6 +258,25 @@ class Handler(BaseHTTPRequestHandler):
             state = dict(LATEST)
             state["context_bubble"] = live_bubble_snapshot(state.get("machine_id"))
             self._send_json(state)
+            return
+
+        if path == "/context/refresh":
+            machine = qs.get("machine", [LATEST.get("machine_id") or "labeler-line3"])[0].strip()
+            machine = machine or "labeler-line3"
+            question = qs.get("q", [LATEST.get("question") or ""])[0].strip() or None
+            try:
+                swarm = get_swarm(machine, RETRIEVER, _on_bubble_update)
+                snap = (
+                    get_bg_runner().run(swarm.refresh(question))
+                    if swarm else empty_bubble()
+                )
+                state = dict(LATEST)
+                state["machine_id"] = state.get("machine_id") or machine
+                state["context_bubble"] = snap
+                LATEST = state
+                self._send_json(state)
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"context refresh failed: {exc}"}, 500)
             return
 
         if path == "/ask":

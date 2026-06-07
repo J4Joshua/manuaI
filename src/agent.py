@@ -367,6 +367,7 @@ class ManuAIAgent(Agent):
         if not self._last_state:
             return
         updated = {**self._last_state, "context_bubble": snap}
+        self._last_state = updated
         asyncio.create_task(_publish_screen_state(updated))
 
     async def llm_node(
@@ -543,6 +544,28 @@ async def entrypoint(ctx: agents.JobContext):
         await session.commit_user_turn()  # finalize audio -> STT -> llm_node -> TTS
         logger.info("[PTT] end_turn: committed")
         return "thinking"
+
+    @ctx.room.local_participant.register_rpc_method("refresh_context")
+    async def refresh_context(data: rtc.RpcInvocationData) -> str:
+        if not swarm:
+            return json.dumps({"status": "disabled", "chunk_count": 0})
+        try:
+            payload = json.loads(data.payload or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        question = (payload.get("question") or agent._last_state.get("question") or "").strip()
+        snap = await swarm.refresh(question or None)
+        state = {
+            **agent._last_state,
+            "machine_id": agent._last_state.get("machine_id") or MACHINE_ID,
+            "context_bubble": snap,
+        }
+        agent._last_state = state
+        await _publish_screen_state(state)
+        return json.dumps({
+            "status": snap.get("status"),
+            "chunk_count": snap.get("chunk_count", 0),
+        })
 
     @ctx.room.local_participant.register_rpc_method("cancel_turn")
     async def cancel_turn(data: rtc.RpcInvocationData) -> str:

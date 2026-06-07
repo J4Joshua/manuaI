@@ -130,12 +130,38 @@ html, body {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
-  margin-bottom: 10px;
   letter-spacing: .04em;
 }
-#panel-context .context-status.gathering::after {
+#panel-context .context-status.gathering::after,
+#panel-context .context-status.refreshing::after {
   content: ' …';
   animation: pulse 1.2s ease-in-out infinite;
+}
+.context-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.context-refresh {
+  flex-shrink: 0;
+  border: 1px solid rgba(59,130,246,.3);
+  border-radius: 4px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.context-refresh:hover:not(:disabled) { border-color: var(--accent); }
+.context-refresh:disabled {
+  opacity: .45;
+  cursor: wait;
 }
 #context-list {
   display: flex;
@@ -168,6 +194,30 @@ html, body {
   padding: 2px 6px;
 }
 .context-line .ctx-text { color: var(--text); }
+.context-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.context-update {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+.context-update .ctx-delta {
+  flex-shrink: 0;
+  color: var(--green);
+  font-weight: 800;
+}
+.context-update .ctx-preview {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-word;
+}
 .context-empty {
   font-size: 14px;
   color: var(--text-dim);
@@ -458,7 +508,11 @@ html, body {
     <!-- Panel: Moss context swarm (background prefetch) -->
     <div id="panel-context" class="card" style="display:none">
       <div class="card-label">Background Context</div>
-      <div id="context-status" class="context-status"></div>
+      <div class="context-head">
+        <div id="context-status" class="context-status"></div>
+        <button id="context-refresh-btn" class="context-refresh" type="button">Refresh</button>
+      </div>
+      <div id="context-updates" class="context-updates"></div>
       <div id="context-list"></div>
     </div>
 
@@ -551,10 +605,13 @@ html, body {
 </div><!-- /shell -->
 
 <script>
+var currentScreenState = null;
+
 // ── applyState: THE ONLY RENDER PATH ─────────────────────────────────────────
 // Phase 3 can swap the data source (LiveKit data channel) without touching this function.
 function applyState(s) {
   if (!s || typeof s !== 'object') return;
+  currentScreenState = s;
 
   const status    = s.status   || 'idle';
   const question  = s.question || '';
@@ -570,20 +627,44 @@ function applyState(s) {
   const machineId = s.machine_id || '';
   const bubble    = s.context_bubble || null;
   const ctxLines  = bubble && Array.isArray(bubble.lines) ? bubble.lines : [];
+  const ctxUpdates= bubble && Array.isArray(bubble.updates) ? bubble.updates : [];
   const ctxStatus = bubble && bubble.status ? bubble.status : 'idle';
 
   // ── Moss context bubble ──
   var panelContext = document.getElementById('panel-context');
   var contextList  = document.getElementById('context-list');
   var contextStatus= document.getElementById('context-status');
-  if (ctxLines.length > 0 || ctxStatus === 'gathering') {
+  var contextUpdates = document.getElementById('context-updates');
+  var contextRefresh = document.getElementById('context-refresh-btn');
+  var busyContext = ctxStatus === 'gathering' || ctxStatus === 'refreshing';
+  if (ctxLines.length > 0 || ctxUpdates.length > 0 || busyContext) {
     panelContext.style.display = '';
-    panelContext.classList.toggle('gathering', ctxStatus === 'gathering');
-    var statusLabel = ctxStatus === 'gathering'
+    panelContext.classList.toggle('gathering', busyContext);
+    var contextStatusLabel = ctxStatus === 'gathering'
       ? 'Moss swarm gathering related SOPs'
-      : (ctxStatus === 'ready' ? 'Context ready' : 'Background context');
-    contextStatus.textContent = statusLabel;
-    contextStatus.className = 'context-status' + (ctxStatus === 'gathering' ? ' gathering' : '');
+      : (ctxStatus === 'refreshing' ? 'Refreshing Moss context'
+      : (ctxStatus === 'ready' ? 'Context ready' : 'Background context'));
+    if (ctxStatus !== 'gathering' && ctxStatus !== 'refreshing' && bubble && bubble.chunk_count) {
+      contextStatusLabel += ' - ' + bubble.chunk_count + ' chunks';
+    }
+    contextStatus.textContent = contextStatusLabel;
+    contextStatus.className = 'context-status' + (busyContext ? ' ' + ctxStatus : '');
+    if (contextRefresh) contextRefresh.disabled = busyContext;
+    contextUpdates.innerHTML = '';
+    ctxUpdates.slice(-4).reverse().forEach(function(up) {
+      var row = document.createElement('div');
+      row.className = 'context-update';
+      row.title = up.query ? 'Query: ' + up.query : '';
+      var delta = document.createElement('span');
+      delta.className = 'ctx-delta';
+      delta.textContent = up.summary || '';
+      var preview = document.createElement('span');
+      preview.className = 'ctx-preview';
+      preview.textContent = up.preview || '';
+      row.appendChild(delta);
+      if (preview.textContent) row.appendChild(preview);
+      contextUpdates.appendChild(row);
+    });
     contextList.innerHTML = '';
     ctxLines.forEach(function(ln) {
       var row = document.createElement('div');
@@ -601,6 +682,7 @@ function applyState(s) {
   } else {
     panelContext.style.display = 'none';
     panelContext.classList.remove('gathering');
+    if (contextRefresh) contextRefresh.disabled = false;
   }
 
   // ── Header ──
@@ -754,16 +836,25 @@ function statusLabel(s) {
 
 // ── Polling: GET /state every 600ms ──────────────────────────────────────────
 var lastSeen = null;
+function stateSignature(data) {
+  var bubble = data.context_bubble || {};
+  var updates = Array.isArray(bubble.updates) ? bubble.updates : [];
+  var latestUpdate = updates.length ? updates[updates.length - 1] : {};
+  return JSON.stringify([
+    data.question, data.status, data.answer,
+    bubble.lines ? bubble.lines.length : 0,
+    bubble.status,
+    updates.length,
+    latestUpdate.summary,
+    latestUpdate.preview
+  ]);
+}
+
 function poll() {
   fetch('/state')
     .then(function(r){ return r.json(); })
     .then(function(data) {
-      var sig = JSON.stringify([
-        data.question, data.status, data.answer,
-        data.context_bubble && data.context_bubble.lines
-          ? data.context_bubble.lines.length : 0,
-        data.context_bubble && data.context_bubble.status
-      ]);
+      var sig = stateSignature(data);
       if (sig !== lastSeen) {
         lastSeen = sig;
         applyState(data);
@@ -779,6 +870,7 @@ var askInput     = document.getElementById('ask-input');
 var askBtn       = document.getElementById('btn-ask');
 var spinnerEl    = document.getElementById('spinner');
 var machineSelect= document.getElementById('machine-select');
+var contextRefreshBtn = document.getElementById('context-refresh-btn');
 
 function doAsk() {
   var q = askInput.value.trim();
@@ -793,12 +885,7 @@ function doAsk() {
     .then(function(r){ return r.json(); })
     .then(function(data) {
       applyState(data);
-      lastSeen = JSON.stringify([
-        data.question, data.status, data.answer,
-        data.context_bubble && data.context_bubble.lines
-          ? data.context_bubble.lines.length : 0,
-        data.context_bubble && data.context_bubble.status
-      ]);
+      lastSeen = stateSignature(data);
       askInput.value = '';
     })
     .catch(function(e){
@@ -814,6 +901,32 @@ askBtn.addEventListener('click', doAsk);
 askInput.addEventListener('keydown', function(e){
   if (e.key === 'Enter') doAsk();
 });
+
+function refreshContext() {
+  var state = currentScreenState || {};
+  var machine = state.machine_id || machineSelect.value || 'labeler-line3';
+  var q = state.question || askInput.value.trim();
+  if (contextRefreshBtn) contextRefreshBtn.disabled = true;
+  var url = '/context/refresh?machine=' + encodeURIComponent(machine);
+  if (q) url += '&q=' + encodeURIComponent(q);
+  fetch(url)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (data.error) throw new Error(data.error);
+      applyState(data);
+      lastSeen = stateSignature(data);
+    })
+    .catch(function(e){
+      console.error('Context refresh failed:', e);
+    })
+    .finally(function(){
+      if (contextRefreshBtn) contextRefreshBtn.disabled = false;
+    });
+}
+
+if (contextRefreshBtn) {
+  contextRefreshBtn.addEventListener('click', refreshContext);
+}
 </script>
 
 </body>

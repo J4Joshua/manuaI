@@ -5,7 +5,7 @@ description: First-time setup of the ManuAI repo, from a fresh clone to a verifi
 
 # First-time setup — ManuAI
 
-Take a fresh clone to a **verified, running demo**. Do the steps in order; **STOP and fix if a verification fails.** Read `CLAUDE.md` first for the mental model. Target: macOS / Apple Silicon, Python 3.10–3.13.
+Take a fresh clone to a **verified, running demo**. Do the steps in order; **STOP and fix if a verification fails.** Read `AGENTS.md` first for the mental model. Target: macOS / Apple Silicon, Python 3.10–3.13.
 
 ## 0. Prereqs
 - `python3 --version` (3.10–3.13), `git --version`, `brew --version`. You should be in the repo root (it has `src/`, `requirements.txt`).
@@ -14,7 +14,7 @@ Take a fresh clone to a **verified, running demo**. Do the steps in order; **STO
 - ⚠ `brew install ollama` (the **formula**) ships WITHOUT the `llama-server` runner and cannot run models (`llama-server binary not found`). Use the cask:
   ```bash
   brew install --cask ollama && open -a Ollama   # starts the server on :11434
-  ollama pull qwen2.5:3b
+  ollama pull qwen2.5:3b && ollama pull nomic-embed-text
   ```
 - Verify: `curl -s localhost:11434/api/tags` lists both models.
 
@@ -36,11 +36,11 @@ cp .env.example .env
 Gotchas that will bite:
 - `WHISPER_MODEL` must end in `-mlx` → `mlx-community/whisper-small-mlx` (the bare name 404s).
 - Leave `HF_TOKEN` **blank** (an empty value sends a broken auth header → 401 even on public models; the code pops it).
-- `UNSILOED_API_KEY` is **optional** — only needed for Phase 4 PDF ingestion. No Moss cloud creds required.
+- `MOSS_PROJECT_ID/KEY` (from moss.dev) and `UNSILOED_API_KEY` are **optional** — the demo runs fully on the local stub without them.
 
-## 5. Build the local Moss index
+## 5. Build the local index
 ```bash
-.venv/bin/python src/moss_ingest.py     # -> data/moss_index.json (21 chunks from data/)
+.venv/bin/python src/ingest_local.py     # -> index.json (21 chunks from data/)
 ```
 
 ## 6. Voice models (download once, then offline)
@@ -57,4 +57,4 @@ Whisper auto-downloads on first STT run. Kokoro needs `models/kokoro-v1.0.onnx` 
 - **Wifi-off:** `.venv/bin/python src/offline_demo.py` → open `http://localhost:8000`, press Enter, speak.
 - **Wifi-on:** `livekit-server --config livekit.offline.yaml` · `.venv/bin/python src/agent.py dev` · `.venv/bin/python src/server.py` → open `/operator.html`.
 
-If something fails, the **"Hard-won gotchas"** in `CLAUDE.md` cover the known traps; deep detail is in `docs/ARCHITECTURE.md`. Next: run `/dev-setup` for the development workflow.
+If something fails, the **"Hard-won gotchas"** in `AGENTS.md` cover the known traps; deep detail is in `docs/ARCHITECTURE.md`. Next: run `/dev-setup` for the development workflow.

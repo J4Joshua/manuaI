@@ -45,7 +45,7 @@ def swarm_enabled() -> bool:
 
 
 def empty_bubble() -> dict:
-    return {"status": "idle", "lines": [], "chunk_count": 0}
+    return {"status": "idle", "lines": [], "updates": [], "chunk_count": 0}
 
 
 def with_bubble(state: dict, swarm: "ContextSwarm | None") -> dict:
@@ -87,6 +87,7 @@ class ContextSwarm:
         self._on_update = on_update
         self._chunks: dict[str, dict] = {}
         self._lines: list[dict] = []
+        self._updates: list[dict] = []
         self._status = "idle"
         self._lock = asyncio.Lock()
         self._depth = 0
@@ -97,6 +98,7 @@ class ContextSwarm:
         return {
             "status": self._status,
             "lines": list(self._lines),
+            "updates": list(self._updates[-8:]),
             "chunk_count": len(self._chunks),
         }
 
@@ -113,6 +115,30 @@ class ContextSwarm:
             except Exception:
                 logger.exception("context_swarm on_update callback failed")
 
+    def _append_update(
+        self,
+        *,
+        added_lines: list[dict],
+        source: str,
+        query: str | None,
+    ) -> None:
+        n = len(added_lines)
+        chunk_ids = [ln["chunk_id"] for ln in added_lines]
+        preview = ", ".join(chunk_ids[:3])
+        if len(chunk_ids) > 3:
+            preview += f", +{len(chunk_ids) - 3} more"
+        summary = f"+{n} {'chunk' if n == 1 else 'chunks'} added" if n else "No new chunks added"
+        update = {
+            "summary": summary,
+            "chunk_ids": chunk_ids,
+            "preview": preview,
+            "source": source,
+        }
+        if query:
+            update["query"] = query
+        self._updates.append(update)
+        self._updates = self._updates[-20:]
+
     async def after_answer(self, question: str, primary_hits: list[dict]) -> None:
         if not self.enabled or not primary_hits:
             return
@@ -123,6 +149,7 @@ class ContextSwarm:
 
     async def _ingest_hits(self, hits: list[dict], source: str, query: str | None = None) -> bool:
         added = False
+        added_lines: list[dict] = []
         async with self._lock:
             for h in hits:
                 cid = h["id"]
@@ -139,12 +166,45 @@ class ContextSwarm:
                 if query:
                     line["query"] = query
                 self._lines.append(line)
+                added_lines.append(line)
                 added = True
             if added:
                 self._status = "gathering"
+                self._append_update(added_lines=added_lines, source=source, query=query)
         if added:
             self._notify()
         return added
+
+    async def refresh(self, question: str | None = None) -> dict:
+        """Force one foreground swarm pass and return the latest UI snapshot."""
+        if not self.enabled:
+            return empty_bubble()
+
+        async with self._lock:
+            self._status = "refreshing"
+        self._notify()
+
+        before = len(self._chunks)
+        if question and len(self._chunks) < MAX_CHUNKS:
+            hits = await self.retriever.search(question, self.machine_id, k=5)
+            await self._ingest_hits(hits, "refresh", question)
+
+        if len(self._chunks) < MAX_CHUNKS:
+            queries = await self._propose_queries()
+            for q in queries:
+                if q in self._prior_queries:
+                    continue
+                self._prior_queries.append(q)
+                hits = await self.retriever.search(q, self.machine_id, k=3)
+                await self._ingest_hits(hits, "refresh", q)
+
+        async with self._lock:
+            if len(self._chunks) == before:
+                self._append_update(added_lines=[], source="refresh", query=question)
+            self._status = "ready"
+            snap = self.snapshot()
+        self._notify()
+        return snap
 
     def _format_context_doc(self) -> str:
         parts = []

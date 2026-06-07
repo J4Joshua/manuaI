@@ -71,6 +71,7 @@
     top_score: 0.0,
     threshold: null,
     source_excerpt: "",
+    context_bubble: { status: "idle", lines: [], updates: [], chunk_count: 0 },
   };
 
   // ---- module state ----
@@ -78,6 +79,7 @@
   var agentIdentity = null; // set once the agent participant is discovered
   var turnActive = false; // guard against double start / end
   var audioUnlocked = false;
+  var lastScreenState = IDLE_STATE;
 
   // ---- agent discovery: ONE idempotent path for both races ----
   // (a) agent already in the room when we connect → scan remoteParticipants
@@ -143,7 +145,7 @@
   }
 
   // ---- push-to-talk RPC calls on the AGENT participant ----
-  function rpc(method) {
+  function rpc(method, payload) {
     if (!room || !agentIdentity) {
       log("rpc(" + method + ") skipped: agent not ready", "error");
       return Promise.reject(new Error("agent not ready"));
@@ -152,7 +154,7 @@
       .performRpc({
         destinationIdentity: agentIdentity,
         method: method,
-        payload: "",
+        payload: payload || "",
       })
       .then(function (resp) {
         log("rpc " + method + " → " + resp);
@@ -291,6 +293,7 @@
           if (topic !== "screen_state") return;
           try {
             var state = JSON.parse(new TextDecoder().decode(payload));
+            lastScreenState = state;
             applyState(state); // applyState lives in operator.html, copied verbatim
             log("screen_state ← status=" + (state.status || "?"));
           } catch (err) {
@@ -372,6 +375,7 @@
           return r.json();
         })
         .then(function (data) {
+          lastScreenState = data;
           applyState(data);
           askInput.value = "";
         })
@@ -389,6 +393,63 @@
     });
   }
 
+  function wireContextRefresh() {
+    var refreshBtn = document.getElementById("context-refresh-btn");
+    var machineSelect = document.getElementById("machine-select");
+    var askInput = document.getElementById("ask-input");
+    if (!refreshBtn) return;
+
+    function refreshViaHttp() {
+      var state = lastScreenState || IDLE_STATE;
+      var machine = state.machine_id ||
+        (machineSelect && machineSelect.value) ||
+        "labeler-line3";
+      var q = state.question || (askInput && askInput.value.trim()) || "";
+      var url = "/context/refresh?machine=" + encodeURIComponent(machine);
+      if (q) url += "&q=" + encodeURIComponent(q);
+      return fetch(url)
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (data) {
+          if (data.error) throw new Error(data.error);
+          lastScreenState = data;
+          applyState(data);
+          return data;
+        });
+    }
+
+    refreshBtn.addEventListener("click", function () {
+      var state = lastScreenState || IDLE_STATE;
+      var payload = JSON.stringify({ question: state.question || "" });
+      refreshBtn.disabled = true;
+
+      var refreshPromise = room && agentIdentity
+        ? rpc("refresh_context", payload)
+        : refreshViaHttp();
+
+      refreshPromise
+        .then(function (resp) {
+          if (typeof resp === "string") {
+            log("context refresh → " + resp);
+          } else {
+            log("context refresh → HTTP fallback");
+          }
+        })
+        .catch(function (e) {
+          log("context refresh failed: " + e, "error");
+          if (room && agentIdentity) {
+            return refreshViaHttp().catch(function (fallbackErr) {
+              log("context refresh fallback failed: " + fallbackErr, "error");
+            });
+          }
+        })
+        .finally(function () {
+          refreshBtn.disabled = false;
+        });
+    });
+  }
+
   // ---- boot ----
   function boot() {
     if (!LK) {
@@ -396,11 +457,13 @@
       log("FATAL: window.LivekitClient is undefined — bundle did not load", "error");
       return;
     }
+    lastScreenState = IDLE_STATE;
     applyState(IDLE_STATE); // render idle panels immediately
     enableButton(false);
     setConn("offline", "Connecting…");
     wireButton();
     wireTypedInput();
+    wireContextRefresh();
     connect();
   }
 
