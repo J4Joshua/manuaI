@@ -31,8 +31,6 @@ flowchart LR
     CORPUS["corpus.py / chat_ingest.py<br/>shared chunk schema"]
     DOCS --> UNS --> CORPUS
     CORPUS --> LOCAL_MOSS[("data/moss_index.json<br/>LocalMossRetriever")]
-    CORPUS --> CLOUD_MOSS[("Moss cloud index<br/>MossRetriever")]
-    CORPUS --> COSINE[("index.json<br/>CosineRetriever fallback")]
   end
 
   subgraph EDGE["Edge runtime: Apple Silicon, local-first"]
@@ -43,29 +41,34 @@ flowchart LR
     QWEN["Qwen2.5 via Ollama<br/>forced JSON cite-or-refuse"]
     STATE["screen_state<br/>answer, citations, steps, safety, escalation"]
     TTS["Kokoro-ONNX<br/>local TTS"]
+    SPK["Laptop speaker<br/>demo output"]
     SCREEN["screen.html / operator.html<br/>same renderer"]
 
     MIC --> STT --> RETRIEVE
     RETRIEVE --> QWEN --> STATE
-    STATE --> TTS
+    STATE --> TTS --> SPK
     STATE --> SCREEN
     SWARM -. "prefetch related SOP context" .-> RETRIEVE
     RETRIEVE -. "seed after each answer" .-> SWARM
   end
 
-  subgraph MODES["Delivery modes"]
-    OFF["offline_demo.py<br/>WebRTC-free wifi-off headline"]
-    LK["agent.py + LiveKit + operator.html<br/>polished local-network push-to-talk"]
-    CLI["ask.py / server.py<br/>typed fallback + API"]
+  subgraph WEAR["iOS app + Ray-Ban architecture"]
+    RAY["Meta Ray-Bans<br/>mic over Bluetooth HFP"]
+    IOS["iOS ManuAI app<br/>audio-only relay"]
+    AUDIO_WS["ws /publish-audio?agent=1<br/>Float32 48 kHz PCM"]
+    BRIDGE["glasses_bridge.py<br/>streaming VAD + 48k to 16k resample"]
+    VIDEO_WS["ws /publish<br/>video drained + video_off"]
+    AGENT_WS["ws /agent-audio<br/>accepted idle in MVP"]
+
+    RAY --> IOS --> AUDIO_WS --> BRIDGE
+    IOS -. "optional camera socket" .-> VIDEO_WS
+    IOS -. "speaker downlink socket" .-> AGENT_WS
   end
 
   LOCAL_MOSS -->|"cold-start offline"| RETRIEVE
-  CLOUD_MOSS -. "load/auth online, query local while alive" .-> RETRIEVE
-  COSINE -. "deterministic fallback gate" .-> RETRIEVE
 
-  OFF --> MIC
-  LK --> MIC
-  CLI --> MIC
+  BRIDGE --> STT
+  STATE -->|"GET /state on :8000"| SCREEN
 ```
 
 | Layer | Technology | Local / Cloud |
