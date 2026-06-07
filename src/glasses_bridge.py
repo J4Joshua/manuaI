@@ -72,11 +72,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http
+import http.server
 import json
 import logging
 import os
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -95,7 +97,10 @@ from websockets.exceptions import ConnectionClosed
 # the `offline_demo` module object (and never modify offline_demo.py itself).
 import offline_demo
 from offline_demo import transcribe_wav, run_pipeline, synth_to_wav
-from retriever import CosineRetriever
+from context_swarm import live_bubble_snapshot
+# Offline retrieval is the LocalMossRetriever (cosine over data/moss_index.json,
+# Moss-embedded) + a context swarm — both built via offline_demo.make_retriever /
+# offline_demo.get_swarm so the brain wiring is identical to the laptop demo.
 
 # ---------------------------------------------------------------------------
 # Config — env-overridable; defaults INHERIT offline_demo so the brain/screen
@@ -118,14 +123,26 @@ HARD_CAP_SECS = float(os.environ.get("GLASSES_HARD_CAP_SECS", offline_demo.HARD_
 # DROP incoming audio so the answer doesn't re-trigger the loop. Best-effort, not AEC.
 SPEAK_COOLDOWN_SECS = float(os.environ.get("GLASSES_SPEAK_COOLDOWN_SECS", 1.0))
 
+# Phrases Whisper hallucinates on near-silence / echo tails (lowercased, no
+# trailing punctuation) — dropped in _process_segment so they can't become a
+# phantom second turn. A real operator fault is multi-word, so single-word
+# segments are also dropped.
+_WHISPER_HALLUCINATIONS = {
+    "you", "thank you", "thanks", "thanks for watching", "thank you for watching",
+    "thank you so much", "thank you very much", "bye", "okay", "ok", "yeah", "uh",
+    "um", "so", "please subscribe", "subscribe", "you're welcome", "i'm sorry",
+}
+
 # Trusted-LAN demo: no per-message size cap, so a large (discarded) JPEG video frame
 # on /publish never trips a close → reconnect-loop. Audio frames are tiny regardless.
 MAX_WS_MESSAGE = None
 
 # ---------------------------------------------------------------------------
-# Module state (single shared retriever + the speaking-guard flags)
+# Module state (single shared retriever + swarm + the speaking-guard flags)
 # ---------------------------------------------------------------------------
-_retriever: CosineRetriever | None = None
+_retriever = None                              # LocalMossRetriever, built at startup
+_swarm = None                                  # context swarm (get_swarm), built with it
+_turn_seq = 0                                  # bumped per completed utterance (screen dedup)
 _utterance_lock: asyncio.Lock | None = None   # serialise utterances (created in the loop)
 _speaking = False                              # True while a pipeline runs
 _cooldown_until = 0.0                          # loop.time() until which we keep dropping
@@ -252,14 +269,25 @@ def _process_segment(segment: np.ndarray, in_rate: int) -> None:
             os.unlink(wav_path)
         except OSError:
             pass
-    if not transcript:
-        _log("empty transcript — ignoring segment")
+    # The HFP mic stays open, so a TTS echo tail / breath / room noise can sneak past
+    # the speaking-guard as a tiny segment that Whisper "hears" as filler ("you",
+    # "thank you", …) — a phantom SECOND turn from one spoken utterance. Drop those:
+    # a real operator fault is always a multi-word phrase.
+    norm = transcript.lower().strip(" .,!?;:\"'")
+    if not norm or norm in _WHISPER_HALLUCINATIONS or len(norm.split()) < 2:
+        _log(f"ignoring spurious/short transcript: {transcript!r}")
         return
     _log(f"heard: {transcript!r}")
-    # run_pipeline = core.answer → _set_latest → render → speak (laptop), reused verbatim.
+    # Bump the per-utterance counter BEFORE run_pipeline so the _set_latest stamp
+    # (installed by _install_turn_seq_stamp) writes turn_seq ATOMICALLY with the answer.
+    # A post-run_pipeline stamp would land seconds late — after the blocking laptop
+    # speak() — and the polling operator screen would render the turn twice.
+    global _turn_seq
+    _turn_seq += 1
+    # run_pipeline = core.answer → _set_latest(stamped w/ turn_seq) → render → speak.
     # NB: transcribe_wav (above) and run_pipeline are called by BARE NAME (module globals)
     # so --selftest-wire can rebind them to stubs — don't qualify them as offline_demo.*.
-    run_pipeline(transcript, _retriever)
+    run_pipeline(transcript, _retriever, _swarm)
 
 
 def _guarded(loop: asyncio.AbstractEventLoop) -> bool:
@@ -408,6 +436,20 @@ def _install_speak_guard() -> None:
     offline_demo.speak = guarded
 
 
+def _install_turn_seq_stamp() -> None:
+    """Make offline_demo._set_latest stamp the current _turn_seq into every screen
+    state. run_pipeline sets LATEST (the answer) and THEN blocks on speak() for
+    seconds; stamping turn_seq inside _set_latest keeps it atomic with the answer, so
+    the polling operator screen sees turn_seq change exactly once per utterance —
+    instead of rendering the turn a second time when a late stamp arrives."""
+    real_set = offline_demo._set_latest
+
+    def stamped(state: dict) -> None:
+        real_set({**state, "turn_seq": _turn_seq})
+
+    offline_demo._set_latest = stamped
+
+
 async def _serve_forever() -> None:
     global _utterance_lock
     _utterance_lock = asyncio.Lock()
@@ -419,14 +461,73 @@ async def _serve_forever() -> None:
         await asyncio.Future()   # run until cancelled
 
 
+# ---------------------------------------------------------------------------
+# Screen server — serves the operator console (operator.html?poll=1) driven by
+# the SAME offline_demo.LATEST the audio loop writes. The richer operator UI
+# polls /state over plain HTTP (no LiveKit), so it runs fully offline.
+# ---------------------------------------------------------------------------
+_WEB = offline_demo.SCREEN_HTML.parent                       # repo web/ dir
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+}
+
+
+class _ScreenHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):  # keep the bridge console clean
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path == "/":
+            self.send_response(302)
+            self.send_header("Location", "/operator.html?poll=1")
+            self.end_headers()
+            return
+        if path == "/state":
+            st = offline_demo._get_latest()
+            st = {**st, "context_bubble": live_bubble_snapshot(st.get("machine_id"))}
+            self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
+            return
+        # Static files under web/ (operator.html, screen.html, static/*) — path-guarded.
+        rel = path.lstrip("/")
+        if rel in ("operator.html", "screen.html") or rel.startswith("static/"):
+            f = (_WEB / rel).resolve()
+            if str(f).startswith(str(_WEB.resolve())) and f.is_file():
+                self._send(200, f.read_bytes(),
+                           _CONTENT_TYPES.get(f.suffix, "application/octet-stream"))
+                return
+        self.send_error(404)
+
+
+def _start_screen_server() -> http.server.ThreadingHTTPServer:
+    """Serve operator.html?poll=1 + /state on PORT (8000) in a daemon thread."""
+    server = http.server.ThreadingHTTPServer(("", offline_demo.PORT), _ScreenHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def run_live() -> int:
-    global _retriever
+    global _retriever, _swarm
     offline_demo.MODELS.mkdir(exist_ok=True)
     _quiet_handshake_noise()
     _install_speak_guard()
-    _retriever = CosineRetriever()
-    offline_demo._start_http_server()
+    _install_turn_seq_stamp()
+    _retriever = offline_demo.make_retriever()
+    _swarm = offline_demo.get_swarm(offline_demo.MACHINE_ID, _retriever, offline_demo._on_bubble_update)
+    _start_screen_server()
     _log(f"index loaded: {len(_retriever.index)} chunks · machine_id={offline_demo.MACHINE_ID}")
+    _log(f"screen (operator console): http://localhost:{offline_demo.PORT}/  →  operator.html?poll=1")
     try:
         asyncio.run(_serve_forever())
     except KeyboardInterrupt:
@@ -685,7 +786,7 @@ def _install_wire_stubs() -> None:
         _WIRE["transcribe_calls"] = _WIRE.get("transcribe_calls", 0) + 1
         return "wire-test utterance"
 
-    def stub_pipeline(transcript, retriever):
+    def stub_pipeline(transcript, retriever, swarm=None):
         if _WIRE.get("pipeline_sleep"):
             time.sleep(_WIRE["pipeline_sleep"])   # widen the guard window for the test
         status = _WIRE.get("expect_status", "answered")
@@ -707,9 +808,13 @@ def _install_wire_stubs() -> None:
 
 
 async def _run_suite(*, stub: bool) -> int:
-    global _utterance_lock, _retriever
+    global _utterance_lock, _retriever, _swarm
     _utterance_lock = asyncio.Lock()
-    _retriever = CosineRetriever()
+    # The wire test stubs run_pipeline (ignores retriever/swarm), so skip building the
+    # real Moss retriever there — keeps --selftest-wire model- and data-free.
+    if not stub:
+        _retriever = offline_demo.make_retriever()
+        _swarm = offline_demo.get_swarm(offline_demo.MACHINE_ID, _retriever, offline_demo._on_bubble_update)
     _quiet_handshake_noise()
     _install_speak_guard()
     if stub:
