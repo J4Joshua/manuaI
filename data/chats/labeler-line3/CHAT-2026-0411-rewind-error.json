@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0411-rewind-error",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-04-11",
+  "topic": "Line 3 REWIND ERROR on backing takeup",
+  "messages": [
+    {
+      "user": "sam.ops",
+      "ts": "11:30",
+      "text": "REWIND ERROR on line 3, backing paper piling up at the takeup"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "11:32",
+      "text": "the rewind/takeup motor isn't keeping tension on the spent backing. could be a slipping rewind clutch or the backing came off the takeup mandrel"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "11:36",
+      "text": "backing slipped off the rewind core"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "11:37",
+      "text": "lock out, re-wrap the backing onto the rewind mandrel a couple turns, make sure the dancer/tension arm moves freely, then restore and test"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "11:49",
+      "text": "re-wrapped, tension arm is moving, REWIND ERROR cleared"
+    }
+  ]
+}

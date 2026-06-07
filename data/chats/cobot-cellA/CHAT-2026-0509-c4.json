@@ -1,0 +1,14 @@
+{
+  "thread_id": "CHAT-2026-0509-c4",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-05-09",
+  "topic": "Cell A cobot protective stop, fault C4",
+  "messages": [
+    {"user": "tomas.ops",  "ts": "11:20", "text": "cobot in cell A just protective-stopped mid cycle, teach pendant is showing fault C4"},
+    {"user": "lena.maint", "ts": "11:22", "text": "C4 is a communication fault between the controller and the robot arm. usually the base-flange cable. check it's seated at both the base flange and the control box"},
+    {"user": "tomas.ops",  "ts": "11:28", "text": "found it, the base flange connector was slightly loose. reseated it"},
+    {"user": "lena.maint", "ts": "11:29", "text": "good. now restart polyscope / power-cycle the controller and clear the protective stop per SOP-2201, then re-home before resuming"},
+    {"user": "tomas.ops",  "ts": "11:38", "text": "restarted, cleared the stop, re-homed, running again. thanks lena"}
+  ]
+}

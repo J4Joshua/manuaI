@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# local real-creds file (copied to .env at setup); has Moss key + HF token
+/env
 
 # Python
 __pycache__/
@@ -28,7 +30,7 @@ models/
 # Logs / scratch
 *.log
 .audit/
-data/moss_index.json
+.claude/scheduled_tasks.lock
 
 # Planning docs — kept local, out of the repo
 docs/PRD.md

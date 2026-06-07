@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0203-c150-joint-limit",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-02-03",
+  "topic": "Cell A cobot C150 position close to joint limits",
+  "messages": [
+    {
+      "user": "tomas.ops",
+      "ts": "10:05",
+      "text": "cobot protective-stopped, pendant shows C150"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "10:07",
+      "text": "C150 is 'position close to joint limits' - a joint drove near its mechanical limit and safety stopped it. usually a bad waypoint or it was jogged into a corner"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "10:09",
+      "text": "it stopped reaching for the far pick position"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "10:10",
+      "text": "jog it back toward home into a safe pose, then check that waypoint - it's too close to the joint limit. clear the protective stop per SOP-2201 and re-home before resuming"
+    },
+    {
+      "user": "tomas.ops",
+      "ts": "10:22",
+      "text": "jogged off the limit, adjusted the waypoint inward, re-homed, running"
+    }
+  ]
+}

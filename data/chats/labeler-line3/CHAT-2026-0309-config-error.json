@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0309-config-error",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-03-09",
+  "topic": "Line 3 CONFIGURATION ERROR after parameter change",
+  "messages": [
+    {
+      "user": "sam.ops",
+      "ts": "08:05",
+      "text": "after someone changed the label length last night the panel boots to CONFIGURATION ERROR"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "08:08",
+      "text": "a saved parameter is out of range or inconsistent - usually label length vs gap, or sensor type. it won't run until the config validates"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "08:10",
+      "text": "label length was set to 0 by accident"
+    },
+    {
+      "user": "dan.maint",
+      "ts": "08:11",
+      "text": "there it is. set the real label length and gap from the spec sheet, save, and reboot the controller. it should clear"
+    },
+    {
+      "user": "sam.ops",
+      "ts": "08:20",
+      "text": "set 4 inch label, 1/8 gap, rebooted, runs clean"
+    }
+  ]
+}

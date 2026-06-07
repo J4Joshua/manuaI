@@ -127,7 +127,12 @@ screen_state = {
   "steps":           [str],
   "safety_warnings": [str],
   "top_score":       float,
-  "threshold":       float                   # makes the gate legible on stage
+  "threshold":       float,                  # makes the gate legible on stage
+  "corroboration":   [ {chat_id, summary, machine_id, score} ],  # §14 — prior operator
+                                             #   incidents (the `chats` index); supplemental,
+                                             #   NEVER a citation; [] when chats are off
+  "corroboration_note": str                  # §14 — second-pass verdict on whether prior
+                                             #   incidents agree/conflict with the answer ("" if none)
 }
 ```
 **Invariants (enforced in `core.answer`, not hoped for):**
@@ -320,15 +325,31 @@ Artifacts: `moss_ingest.py`, `retriever.py` (`MossRetriever` = the §3c seam), `
 
 **Scaffolded (code + syntax-checked; NOT run — need your hardware/keys):**
 - **Phase 3 voice — WIRED + verified mic-free** (post-scaffold): deps + `livekit-server` 1.12 installed; `voice_smoke.py` (Kokoro TTS → mlx-whisper STT → `core.answer` → TTS) **PASS**; `agent.py` rebuilt against real `livekit-agents==1.5.17` — in-process custom STT/TTS nodes, `core.answer` via `llm_node`, push-to-talk RPC, `screen_state` published over the data channel; `agent.py check` PASS **and the worker registers with `livekit-server`**. The **live push-to-talk mic round-trip is the only unverified piece** (needs your mic). `.env` fix: `WHISPER_MODEL` must be `mlx-community/whisper-small-mlx` (the bare name 404s); empty `HF_TOKEN` breaks anonymous HF downloads.
-- **Phase 4 `unsiloed_ingest.py`** — PDF → Parse/Extract → `corpus` schema → Moss; needs `UNSILOED_API_KEY`; field-mapping table inside. (`6405f2c`)
+- **Phase 4 `unsiloed_ingest.py` — IMPLEMENTED + LIVE-VERIFIED (2026-06-06).** Any PDF → Unsiloed **Parse** (server-side chunking — each Unsiloed `chunk` becomes one record; we never re-chunk) + Unsiloed **Extract** (`POST /v2/extract`, JSON-Schema fields: document_title/equipment_name/error_codes/has_safety_warnings) → normalize to §3a → Moss `create_index` (unions authored .md SOP chunks unless `--no-sops`). Works on **any** file: machine_id resolves manifest → path (`machines/<id>/…`) → `--machine` → `all`; manifest is optional enrichment. Verified end-to-end on a real PDF (parse 11 chunks → extract title conf 0.99 → 6 records → Moss build READY → `MossRetriever` query score 0.99 with page citation). **Doc-vs-reality corrections (verified live):** endpoint is `/v2/extract` (not `/extract`); multipart `pdf_file`+`schema_data`; **per-document** (not per-chunk); async, status `completed`; `score` is `{grounding_score, extraction_score}` (an object, not a float). ⚠ Parse ≈5 credits/page.
 
 **Gap-register deltas:** G3 (typed-input) → **addressed** (screen.html). G5 (CDN offline) → **addressed** (inline). G1 (LiveKit cloud default) → **partly** (`agent.py` defaults local; still needs the wifi-off round-trip DoD). G8 → **addressed** (`test_beats.py`).
 
 **New handoff notes:**
-- `MossRetriever.search` returns `page=None`; Phase 4's page-citation DoD needs it to read `md.get("page")` from Moss metadata (page is stored at ingest).
+- ~~`MossRetriever.search` returns `page=None`~~ **RESOLVED (Phase 4):** `MossRetriever` now parses `md["page"]` back to `int|None`; `unsiloed_ingest.py` stores `page` in Moss metadata at ingest, so page citations ("p.4") surface on the Moss path. (Authored .md SOPs still have no page → None, as before.)
 - Implemented `screen_state` **extends §3b** with `safety_flag: bool` + a bounded `source_excerpt: str` (≤500 chars) — Phase 2/3 consumers rely on these.
 - Real-corpus chunks have no structured `steps[]` (steps live in the section `text` / `source_excerpt`); the numbered-steps panel only fills for corpora that carry `steps[]`. Optional enhancement: parse §4 Procedure into `steps[]` in `corpus.py`.
 
 **Phase 2↔3 unified frontend (operator.html):** the demo surface — a localhost page (bundled `livekit-client` 2.19.1, no CDN) that connects to the room, drives push-to-talk via the agent's `start_turn`/`end_turn` RPCs, plays the agent audio, and renders `screen_state` from the LiveKit **data channel** through screen.html's *byte-identical* `applyState()` (transport swapped, renderer unchanged — exactly as §3b/§12 intended). `server.py` adds `/operator.html` `/static` `/token`. **Dispatch fix:** `@rtc_session(agent_name="manuai")` disables auto-dispatch, so `/token` embeds a `RoomConfiguration(agents=[RoomAgentDispatch("manuai")])` — opening the page auto-dispatches the agent. Verified headless (token+serve+JS+API paths); the live mic round-trip is the operator's test. **G3 (typed-input) also lives on as the `/ask` footer fallback.**
 
 **Wifi-off reality (G16):** LiveKit/WebRTC **cannot** hold a connection with wifi off — empirically the agent's *subscriber peer-connection fails* even with `node_ip` pinned to loopback (`livekit.offline.yaml`), and the browser hits Chrome's mDNS candidates. WebRTC needs a live interface. So the **wifi-off headline runs on `offline_demo.py`** — a WebRTC-free single process: mic → mlx-whisper → `core.answer` (stub retriever + local Ollama) → Kokoro (speaker) + `screen.html` over plain localhost HTTP. Zero network; `--selftest` green (jam→answered+SOP-1187, bypass→escalated). **Demo split:** `offline_demo.py` = the wifi-off moment + backup video (bulletproof); LiveKit `operator.html` = the polished **wifi-ON** voice+screen experience. (The stub retriever, not Moss, is the offline brain — Moss `load_index` is cloud, §12a/G14.)
+
+---
+
+## 14. Secondary source — operator chats (corroboration & guidance)
+
+A **second, supplemental** data source: operator chat logs (Slack-style threads in `data/chats/<machine_id>/*.json`). They answer *"how did operators actually handle a similar issue before?"* and **verify** that the SOP-grounded answer matches prior practice. SOPs/manuals remain the sole authoritative, citable grounding; **chats are never cited and never decide answered-vs-escalated.**
+
+**Ingestion (same Unsiloed engine, separate index).** `chat_ingest.py` renders each thread to a text-layer PDF (`fpdf2`) and runs the **same** `unsiloed_ingest` Parse + Extract + chunk pipeline (chat-specific Extract schema: `incident_summary`, `equipment_problem`, `error_codes`, `resolution`, `resolved`), normalizing to the §3a 10-key schema with `doc_type="chat"`. Output loads into a **separate Moss index `chats`** (kept apart from `manuals`). → `chat thread .json → render PDF → Unsiloed Parse+Extract → normalize → Moss "chats"`.
+
+**Two simultaneous, source-separated retrievals.** `core.answer(question, machine_id, retriever, chat_retriever=None)` runs the SOP retriever and the chat retriever **in parallel** (`asyncio.gather`), each its own `MossRetriever` over its own index. `machine_id` filtering keeps a labeler query from pulling cobot chats. Chat retrieval is wrapped in `_safe_search` (a chat-index failure degrades to no corroboration, never breaks the answer).
+
+**Decoupled verification — the safety rule.** The **answer-vs-escalate decision and the answer text are produced from SOPs ALONE** (the chat excerpts are *not* in that prompt), so the refusal is exactly as reliable as the no-chats path (chats can NEVER flip a refusal or make an off-task query answerable — this was tested: feeding chats into the decision prompt measurably weakened the 3B's task-match refusal on the gate-less Moss path, so it was removed). Chats are used in a **separate second `chat_json` pass** (`_verify_with_chats`, `VERIFY_SYSTEM`) that only **annotates an already-grounded answer**: it returns `corroboration_note` ("Matches a prior incident…" / "Caution: a prior incident handled this differently…" / ""). The retrieved threads themselves surface in `screen_state.corroboration` (additive §3b fields — they touch no invariant; shown even on escalations, e.g. operators also refused to bypass a guard).
+
+**Where it runs.** Chats are a **wifi-ON** supplemental (Moss `load_index` is cloud, §12a/G14), surfaced via `ask.py --chats`. The wifi-off headline (`offline_demo.py`, stub retriever) deliberately stays chat-free to preserve the zero-network guarantee. On the **stub** path the deterministic gate decides answered/escalated *before* any LLM call, so stub-SOP + chats is bulletproof regardless of phrasing; the Moss path inherits G15 (LLM-only, phrasing-sensitive refusal) — unchanged by this feature.
+
+**Verified (2026-06-06):** stub-SOP + Moss-chats over the 4 canonical beats — jam→answered+SOP-1187+corroboration(e42)+note; bypass→escalated+corroboration(guard-bypass); servo→escalated+corroboration; cobot→answered+SOP-2201+corroboration(c4)+note. No CHAT id ever entered `citations`; `screen_state` contract held on every result; no-chats `test_beats` unchanged.

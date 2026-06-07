@@ -9,13 +9,15 @@ Routes:
                        → core.answer(q, machine, MossRetriever) → set LATEST → JSON
     GET /operator.html → operator.html (Phase 3 unified voice + live screen)   [NEW]
     GET /operator      → alias for /operator.html                              [NEW]
+    GET /console(.html)→ alias for /operator.html (same operator console UI)   [NEW]
     GET /static/<file> → the locally-bundled livekit-client UMD + operator.js  [NEW]
     GET /token?identity=...
                        → {"url", "token", "room"} — LiveKit JWT for the browser [NEW]
+    GET /tts?text=...  → Kokoro-synthesized WAV for operator demo / typed fallback [NEW]
 
 Uses stdlib only for the core (http.server.ThreadingHTTPServer, asyncio, json,
-urllib). /token additionally imports livekit.api (already a project dep); that
-import is lazy + guarded so the Phase 2 routes never break if it is unavailable.
+urllib). /token additionally imports livekit.api (already a project dep); /tts
+lazy-imports kokoro_onnx + soundfile (same stack as voice_smoke.py).
 Port from PORT env var, default 8000.
 
 The module-global LATEST starts as an idle placeholder whose shape is identical
@@ -86,6 +88,31 @@ LATEST = {
     "threshold": None,
     "source_excerpt": "",
 }
+
+TTS_VOICE = os.environ.get("TTS_VOICE", "af_heart")
+KOKORO_MODEL_PATH = os.environ.get("KOKORO_MODEL_PATH", str(paths.MODELS / "kokoro-v1.0.onnx"))
+KOKORO_VOICES_PATH = os.environ.get("KOKORO_VOICES_PATH", str(paths.MODELS / "voices-v1.0.bin"))
+_kokoro = None
+
+
+def _synth_wav_bytes(text: str) -> bytes:
+    """Kokoro TTS → in-memory WAV (same voice stack as agent.py / voice_smoke)."""
+    global _kokoro
+    import io
+
+    import soundfile as sf
+    from kokoro_onnx import Kokoro
+
+    if _kokoro is None:
+        if not Path(KOKORO_MODEL_PATH).is_file() or not Path(KOKORO_VOICES_PATH).is_file():
+            raise FileNotFoundError(
+                "Kokoro weights missing — place kokoro-v1.0.onnx + voices-v1.0.bin in models/"
+            )
+        _kokoro = Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
+    samples, sample_rate = _kokoro.create(text, voice=TTS_VOICE, speed=1.0, lang="en-us")
+    buf = io.BytesIO()
+    sf.write(buf, samples, sample_rate, format="WAV")
+    return buf.getvalue()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -231,8 +258,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(OPERATOR_HTML)
             return
 
+        if path in ("/console", "/console.html", "/operator-console", "/operator_console.html"):
+            if not OPERATOR_HTML.exists():
+                self.send_error(404, "operator.html not found")
+                return
+            self._send_html(OPERATOR_HTML)
+            return
+
         if path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
+            return
+
+        if path == "/tts":
+            text = qs.get("text", [""])[0].strip()
+            if not text:
+                self.send_error(400, "text query param required")
+                return
+            try:
+                self._send_bytes(_synth_wav_bytes(text), "audio/wav")
+            except Exception as exc:  # noqa: BLE001
+                self._send_json({"error": f"tts failed: {exc}"}, 500)
             return
 
         if path == "/token":
@@ -286,6 +331,7 @@ def main():
     server = ThreadingHTTPServer(("", port), Handler)
     print(f"ManuAI screen (HTTP poll)  →  http://localhost:{port}/")
     print(f"ManuAI operator (voice)    →  http://localhost:{port}/operator.html")
+    print(f"ManuAI operator console    →  http://localhost:{port}/console")
     print(f"  LiveKit: url={LIVEKIT_URL} room={ROOM_NAME} key={LIVEKIT_API_KEY}")
     try:
         server.serve_forever()

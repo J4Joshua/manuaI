@@ -1,0 +1,34 @@
+{
+  "thread_id": "CHAT-2026-0327-no-labels-found",
+  "machine_id": "labeler-line3",
+  "channel": "#line3-maintenance",
+  "date": "2026-03-27",
+  "topic": "Line 3 NO LABELS FOUND / sensor",
+  "messages": [
+    {
+      "user": "priya.ops",
+      "ts": "14:40",
+      "text": "line 3 says NO LABELS FOUND but there are clearly labels on the web"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "14:42",
+      "text": "the label gap sensor isn't seeing the gaps between labels - dirty sensor, wrong sensor mode, or the web isn't seated in the sensor slot"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "14:45",
+      "text": "the peel tip sensor window had adhesive gunk on it"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "14:46",
+      "text": "clean the sensor eye with IPA, reseat the web in the slot, then teach/calibrate the label sensor so it learns the gap"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "14:58",
+      "text": "cleaned, recalibrated the sensor, it's detecting gaps again"
+    }
+  ]
+}

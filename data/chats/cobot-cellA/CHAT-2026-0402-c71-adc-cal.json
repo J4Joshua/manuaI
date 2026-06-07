@@ -1,0 +1,29 @@
+{
+  "thread_id": "CHAT-2026-0402-c71-adc-cal",
+  "machine_id": "cobot-cellA",
+  "channel": "#cell-a-cobot",
+  "date": "2026-04-02",
+  "topic": "Cell A cobot C71 ADC calibration",
+  "messages": [
+    {
+      "user": "priya.ops",
+      "ts": "13:20",
+      "text": "pendant threw C71 on startup"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "13:22",
+      "text": "C71 family is around ADC / current sensor calibration on a joint. on boot it can be a transient - try a full reboot sequence first"
+    },
+    {
+      "user": "priya.ops",
+      "ts": "13:30",
+      "text": "full power-cycle and it came up clean"
+    },
+    {
+      "user": "lena.maint",
+      "ts": "13:31",
+      "text": "if C71 comes back on the same joint repeatedly it's a joint electronics issue - log a UR case, don't keep resetting through it"
+    }
+  ]
+}
