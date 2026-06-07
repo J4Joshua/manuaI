@@ -114,6 +114,13 @@ html, body {
   border: 2px solid var(--text); padding: 7px 14px; cursor: pointer; white-space: nowrap;
 }
 .demo-btn:hover { background: transparent; color: var(--text); }
+.reset-btn {
+  font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--text); background: transparent;
+  border: 2px solid var(--border-strong); padding: 7px 14px; cursor: pointer; white-space: nowrap;
+}
+.reset-btn:hover { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+.reset-btn:active { transform: translateY(1px); }
 
 /* ── Context pool graph (right panel) ─────────────────────────── */
 .panel-right { min-height: 0; }
@@ -755,6 +762,7 @@ html, body {
     <span class="logo"><span class="mark"></span><span class="name">Manu<b>AI</b></span></span>
     <span class="machine-badge" title="Searching all indexed SOPs and manuals"><span class="pin"></span><span id="hdr-machine">Full corpus indexed</span></span>
     <span class="spacer"></span>
+    <button type="button" id="reset-btn" class="reset-btn" title="Clear the transcript, context pool, and screen state — full session reset">Reset</button>
     <button type="button" id="demo-btn" class="demo-btn">Play demo</button>
     <span class="conn-pill">
       <span class="glyph">🕶</span>

@@ -160,6 +160,8 @@ _utterance_lock: asyncio.Lock | None = None   # serialise utterances (created in
 _speaking = False                              # True while a pipeline runs
 _cooldown_until = 0.0                          # loop.time() until which we keep dropping
 _tasks: set = set()                            # strong refs so dispatch tasks aren't GC'd mid-flight
+_loop: asyncio.AbstractEventLoop | None = None # the bridge's running loop; the screen-server
+                                               # daemon thread uses it to schedule the swarm reset
 
 # Ray-Ban live feed: the latest JPEG from /publish. handle_publish writes it on the
 # asyncio loop; the screen server's /glasses.mjpeg reader runs in a separate daemon
@@ -482,9 +484,26 @@ def _install_turn_seq_stamp() -> None:
     offline_demo._set_latest = stamped
 
 
+def _reset_session() -> None:
+    """Full session reset for the operator UI 'Reset' button: clear the screen state
+    (transcript fields), zero the turn counter, and clear the context pool (swarm bubble).
+    Called from the screen server's daemon thread, so the swarm reset — which cancels the
+    swarm task + takes an async lock — is marshalled onto the bridge's loop."""
+    global _turn_seq
+    _turn_seq = 0
+    offline_demo._set_latest(_idle_state())
+    if _swarm is not None and _loop is not None:
+        try:
+            asyncio.run_coroutine_threadsafe(_swarm.reset_for_question(), _loop).result(timeout=2)
+        except Exception as exc:  # noqa: BLE001 — best-effort; the screen state is already cleared
+            _log(f"reset: context pool reset skipped ({exc})")
+    _log("session reset (transcript + context pool cleared)")
+
+
 async def _serve_forever() -> None:
-    global _utterance_lock
+    global _utterance_lock, _loop
     _utterance_lock = asyncio.Lock()
+    _loop = asyncio.get_running_loop()
     async with serve(_ws_handler, GLASSES_HOST, GLASSES_PORT,
                      process_request=_process_request, max_size=MAX_WS_MESSAGE):
         _log(f"glasses audio WS  : ws://<mac-ip>:{GLASSES_PORT}/publish-audio")
@@ -556,6 +575,10 @@ class _ScreenHandler(http.server.BaseHTTPRequestHandler):
             st = offline_demo._get_latest()
             st = {**st, "context_bubble": live_bubble_snapshot()}
             self._send(200, json.dumps(st).encode(), _CONTENT_TYPES[".json"])
+            return
+        if path == "/reset":                      # operator UI "Reset" button — full session clear
+            _reset_session()
+            self._send(200, b'{"ok":true}', _CONTENT_TYPES[".json"])
             return
         if path == "/glasses.jpg":                # latest Ray-Ban frame (debug / readiness)
             with _jpeg_lock:
@@ -746,8 +769,9 @@ async def _wired_video_connect_loop() -> None:
 
 
 async def _wired_main() -> None:
-    global _utterance_lock
+    global _utterance_lock, _loop
     _utterance_lock = asyncio.Lock()
+    _loop = asyncio.get_running_loop()
     # Audio is the critical wire; video (Stage 5) is best-effort on a second port.
     await asyncio.gather(_wired_connect_loop(), _wired_video_connect_loop())
 
@@ -999,6 +1023,23 @@ async def _check_post_photo() -> bool:
     return ok
 
 
+async def _check_reset() -> bool:
+    """GET /reset clears the screen state (status→idle) and zeroes the turn counter —
+    the operator UI 'Reset' button's server half."""
+    # The beats left LATEST non-idle (escalated) and _turn_seq bumped; reset must clear both.
+    try:
+        status, body = await asyncio.to_thread(_http_get, offline_demo.PORT, "/reset")
+        ok = status == 200 and b'"ok":true' in body
+        _, raw = await asyncio.to_thread(_http_get, offline_demo.PORT, "/state")
+        idle = json.loads(raw).get("status") == "idle"
+        ok = ok and idle and _turn_seq == 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [reset] error: {exc}  → {_FAIL}")
+        return False
+    print(f"  [reset] /reset → status=idle, turn_seq={_turn_seq}  → {_PASS if ok else _FAIL}")
+    return ok
+
+
 async def _check_http_200() -> bool:
     ok = True
     try:
@@ -1075,8 +1116,9 @@ def _install_wire_stubs() -> None:
 
 
 async def _run_suite(*, stub: bool) -> int:
-    global _utterance_lock, _retriever, _swarm
+    global _utterance_lock, _retriever, _swarm, _loop
     _utterance_lock = asyncio.Lock()
+    _loop = asyncio.get_running_loop()
     # The wire test stubs run_pipeline (ignores retriever/swarm), so skip building the
     # real Moss retriever there — keeps --selftest-wire model- and data-free.
     if not stub:
@@ -1102,6 +1144,7 @@ async def _run_suite(*, stub: bool) -> int:
         results.append(await _check_publish_endpoint())
         results.append(await _check_agent_audio_endpoint())
         results.append(await _check_post_photo())
+        results.append(await _check_reset())
         results.append(await _check_http_200())
 
         if stub:
