@@ -9,7 +9,8 @@ pronounced as /ˈmæn.ju.əl/ (manual)
 ## Problem
 
 - Manufacturing companies lose hundreds of thousands of dollars per hour due to operator mistakes.
-- Operators have to refer to hundreds of SOPs, ManuAIs and tribal knowledge in chats
+- Operators have to refer to hundreds of SOPs, ManuAIs and tribal knowledge in chats to fix a simple error
+- Every second costs thousands
 
 ## Solution
 
