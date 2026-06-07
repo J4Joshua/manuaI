@@ -230,6 +230,7 @@
   // ── Camera panel ────────────────────────────────────────────────────────
   (function setupCamera() {
     var video = document.getElementById("cam-video");
+    var camImg = document.getElementById("cam-img");
     var placeholder = document.getElementById("cam-placeholder");
     var ptxt = document.getElementById("cam-ptxt");
     var phint = document.getElementById("cam-phint");
@@ -265,7 +266,37 @@
       }
     }
 
-    if (demoMode) {
+    if (pollMode) {
+      // Offline glasses bridge relays the Ray-Ban camera as MJPEG. Probe the single-
+      // frame endpoint for readiness (well-defined <img> onload), then point the visible
+      // <img> at the live MJPEG stream; revert to the placeholder if the feed stops.
+      if (video) video.style.display = "none";
+      var feedOn = false;
+      var probeFeed = function () {
+        var test = new Image();
+        test.onload = function () {
+          if (feedOn) return;
+          feedOn = true;
+          if (camImg) {
+            camImg.src = "/glasses.mjpeg?t=" + Date.now();
+            camImg.style.display = "block";
+          }
+          showLive();
+          log("Ray-Ban glasses feed active");
+        };
+        test.onerror = function () {
+          if (feedOn) {
+            feedOn = false;
+            if (camImg) { camImg.style.display = "none"; camImg.removeAttribute("src"); }
+          }
+          showPlaceholder(false);
+        };
+        test.src = "/glasses.jpg?t=" + Date.now();
+      };
+      showPlaceholder(false);
+      probeFeed();
+      setInterval(probeFeed, 2000);
+    } else if (demoMode) {
       showDemoFeed();
     } else if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       var cancelled = false;
