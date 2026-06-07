@@ -1,0 +1,14 @@
+# Xcode per-user UI state (regenerated on open — never commit)
+xcuserdata/
+*.xcuserstate
+
+# Build output
+DerivedData/
+build/
+.build/
+*.xcframework/
+
+# macOS
+.DS_Store
+
+# Note: Package.resolved IS committed on purpose — it pins the DAT SDK version.

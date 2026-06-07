@@ -11,10 +11,11 @@ existing `src/offline_demo.py` loop with **one thing swapped: the audio source i
 WebSocket from the glasses instead of the laptop mic.** Everything downstream
 (Whisper → `core.answer` → Kokoro TTS on the laptop + screen) is unchanged.
 
-> The glasses never talk to the laptop directly. The proven `~/mc-goggles` iOS app
-> relays the glasses mic to a server over a raw WebSocket. Your job is to make ManuAI
-> *be* that server for the audio path. Read `reference.md` (next to this file) for the
-> exact wire contract and the DAT/Bluetooth facts before you start.
+> The glasses never talk to the laptop directly. The iOS app (in-repo at `ios/ManuAI`,
+> forked from the proven glasses app) relays the glasses mic to a server over a raw
+> WebSocket. Your job is to make ManuAI *be* that server for the audio path. Read
+> `reference.md` (next to this file) for the exact wire contract and the DAT/Bluetooth
+> facts before you start.
 
 ## Scope (what to build, what NOT to)
 
@@ -22,9 +23,10 @@ WebSocket from the glasses instead of the laptop mic.** Everything downstream
 - **No video, no photo** — the operator isn't looking at a screen on the glasses.
 - **No `/agent-audio` downlink** — output is the laptop, so we never send audio back
   to the glasses speaker.
-- **Do NOT edit `~/mc-goggles` or any iOS/Swift code.** The app ships as-is; only its
-  *host* gets repointed (see "Point the glasses app here"), and that's a manual,
-  one-line change the operator does — not part of this build.
+- **The iOS app lives in-repo at `ios/ManuAI`** (forked + renamed). The audio uplink and
+  the camera-free "Start hands-free" path are already wired; the host IP is managed by
+  `ios/configure_and_launch.sh` (see "Point the glasses app here"). Keep edits minimal —
+  don't re-fork the camera/DAT machinery; the bridge only needs the audio path.
 - **Do NOT touch the LiveKit / WebRTC path** (`src/agent.py`, `operator.html`). That's
   the wifi-ON path and can't go offline (ARCHITECTURE G16). The bridge is raw-WS,
   wifi-off.
@@ -123,15 +125,33 @@ JSON text header `{"sampleRate":48000,"channels":1}`; **subsequent** messages ar
   unaffected either way, but confirm it before relying on it for a demo. Also note:
   whether the registration *token* expires over a long offline run is undocumented.
 
-## Point the glasses app here (manual, no code edits)
+## Point the glasses app here + launch Xcode (one command)
 
-The iOS host is a single constant:
-`~/mc-goggles/RayBan/ViewModels/StreamSessionViewModel.swift:16` →
-`private let streamPublishHost = "ws://10.10.10.121:8766"`. Repoint the **IP** to the
-Mac's LAN/hotspot IP (`ipconfig getifaddr en0`, or `172.20.10.x` when the Mac is on
-the iPhone's hotspot), **keep port 8766**, rebuild in Xcode. `NSAllowsLocalNetworking`
-in the app's `Info.plist` already permits plaintext `ws://` to RFC-1918 private ranges
-(incl. `172.20.10.x`), so no plist change is needed for a hotspot IP.
+The iOS app now lives **in-repo at `ios/ManuAI`** (forked from the proven glasses app;
+the audio path plus a camera-free **"Start hands-free (audio only)"** button are wired).
+Its server host is a single Swift constant in
+`ios/ManuAI/ViewModels/StreamSessionViewModel.swift` →
+`private let streamPublishHost = "ws://<ip>:8766"`.
+
+**Don't hand-edit it — run the helper.** It detects this Mac's IP, rewrites that
+constant, and opens the project in Xcode:
+
+```bash
+ios/configure_and_launch.sh               # auto-detect (en0 WiFi, then en1)
+ios/configure_and_launch.sh 172.20.10.2   # or force an IP (e.g. iPhone Personal Hotspot)
+```
+
+Then in Xcode: set the **Signing Team** (target ManuAI → Signing & Capabilities → your
+Apple ID), **Run** on the iPhone, and tap **Start hands-free (audio only)**. Keep **port
+8766** (the bridge's audio socket; `:8000` is the separate screen server).
+`NSAllowsLocalNetworking` in `Info.plist` already permits plaintext `ws://` to RFC-1918
+ranges (incl. `172.20.10.x`), so no plist change is needed for a hotspot IP. Re-run the
+helper whenever your IP changes (new WiFi, DHCP renew, switching to the hotspot).
+
+To confirm real mic audio is flowing, watch the bridge terminal for
+`[glasses] audio client connected` → `header: sampleRate=… channels=1` →
+`heard: '…your words…'`. A connection with no `heard:` line means audio isn't reaching
+the VAD (HFP mic not routing, or `ENERGY_THRESHOLD` too high for Bluetooth levels).
 
 ## Verify without glasses
 
@@ -151,7 +171,7 @@ in the app's `Info.plist` already permits plaintext `ws://` to RFC-1918 private 
 
 - `reference.md` (next to this file) — wire contract, DAT facts, networking, ManuAI
   internals to reuse.
-- `~/mc-goggles/PROTOCOL.md` §1 — the authoritative glasses↔server WebSocket contract.
+- `ios/PROTOCOL.md` §1 — the authoritative glasses↔server WebSocket contract (in-repo).
 - `~/manuaI/GLASSESINTEGRATION.md` — the original integration assessment (effort, paths).
 - `~/manuaI/src/offline_demo.py` — the pipeline you're wrapping.
 - **DAT SDK — vendored into this repo** at `vendor/meta-wearables-dat-ios/` (the full
