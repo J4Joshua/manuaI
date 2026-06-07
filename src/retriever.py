@@ -55,7 +55,7 @@ class CosineRetriever:
     Cold-loads from disk with zero network, ever — the bulletproof-offline path and
     the backup-video engine (ARCHITECTURE.md §12a)."""
 
-    threshold = 0.70
+    threshold = 0.30
 
     def __init__(self, index_path=None):
         path = Path(index_path) if index_path else paths.INDEX_JSON

@@ -30,6 +30,7 @@ models/
 # Logs / scratch
 *.log
 .audit/
+.claude/scheduled_tasks.lock
 
 # Planning docs — kept local, out of the repo
 docs/PRD.md
