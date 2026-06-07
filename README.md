@@ -1,5 +1,5 @@
 # ManuAI 
-pronounced as /ˈmæn.ju.əl/
+pronounced as /ˈmæn.ju.əl/ (manual)
 
 **An offline-first voice copilot for the factory floor.** When a machine faults, an operator just asks out loud — *"the labeler on line 3 jammed, error E-42"* — and ManuAI **speaks back the right procedure and shows it on screen, cited to the exact SOP** — or, if there's no approved procedure, it **refuses and escalates** instead of guessing. It runs entirely on one Apple-Silicon box, **with the wifi physically off.**
 
@@ -21,7 +21,7 @@ pronounced as /ˈmæn.ju.əl/
 
 ManuAI maps the sponsor technologies onto a simple factory-floor loop:
 
-- **Unsiloed** builds the knowledge base: messy SOP PDFs and manuals become page-aware chunks, titles, error codes, safety flags, and citation metadata.
+- **Unsiloed** builds the knowledge base: messy SOP PDFs, manuAIs and chats become page-aware chunks, titles, error codes, safety flags, and citation metadata.
 - **Moss** retrieves that knowledge quickly on-prem. It also enables the context swarm: background agents prefetch related SOPs, LOTO context, safety steps, and prior incidents while the foreground agent answers the operator.
 - **Qwen** turns retrieved SOP excerpts into a short local answer, but only if it can cite the retrieved chunks. If it cannot ground the answer, ManuAI escalates instead of inventing a procedure.
 
@@ -80,7 +80,7 @@ flowchart LR
 | Layer | Technology | Local / Cloud |
 |---|---|---|
 | Doc ingestion | **Unsiloed** — Parse + Extract → chunks | Cloud · one-time |
-| Retrieval | **LocalMossRetriever** · **MossRetriever** · **CosineRetriever** | Local Moss index = cold-start offline · sponsor Moss = online load/local query · cosine = fallback |
+| Retrieval | **LocalMossRetriever** · **MossRetriever**  | Local Moss index = cold-start offline · sponsor Moss = online load/local query |
 | Embeddings | **nomic-embed-text** (Ollama) · Moss built-in | Local |
 | LLM | **Qwen2.5-3B** via **Ollama**, forced-JSON cite-or-refuse | Local |
 | Speech-to-text | **Whisper** via **mlx-whisper** | Local |
